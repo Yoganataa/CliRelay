@@ -175,8 +175,8 @@ CliRelay/
 Contributions are welcome! Here's how to get started:
 
 ```bash
-# 1. Fork & clone
-git clone https://github.com/<your-username>/CliRelay.git
+# 1. Clone the repository
+git clone https://github.com/kittors/CliRelay.git
 
 # 2. Create a feature branch
 git checkout -b feature/amazing-feature
@@ -184,7 +184,7 @@ git checkout -b feature/amazing-feature
 # 3. Make your changes & commit
 git commit -m "feat: add amazing feature"
 
-# 4. Push & open a PR
+# 4. Push to your branch & open a PR
 git push origin feature/amazing-feature
 ```
 

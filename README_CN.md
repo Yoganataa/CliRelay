@@ -175,8 +175,8 @@ CliRelay/
 欢迎贡献！以下是参与方式：
 
 ```bash
-# 1. Fork 并克隆
-git clone https://github.com/<your-username>/CliRelay.git
+# 1. 克隆代码仓库
+git clone https://github.com/kittors/CliRelay.git
 
 # 2. 创建功能分支
 git checkout -b feature/amazing-feature
@@ -184,7 +184,7 @@ git checkout -b feature/amazing-feature
 # 3. 提交更改
 git commit -m "feat: add amazing feature"
 
-# 4. 推送并提交 PR
+# 4. 推送到你的分支并提交 PR
 git push origin feature/amazing-feature
 ```
 
