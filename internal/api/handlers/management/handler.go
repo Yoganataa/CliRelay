@@ -48,6 +48,7 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	startTime           time.Time
 }
 
 // NewHandler creates a new management handler instance.
@@ -64,6 +65,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
+		startTime:           time.Now(),
 	}
 	h.startAttemptCleanup()
 	return h
