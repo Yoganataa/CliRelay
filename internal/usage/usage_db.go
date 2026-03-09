@@ -503,6 +503,7 @@ func GetChannelAvgLatency(days int) ([]ChannelLatency, error) {
 		WHERE timestamp > ? AND source != ''
 		GROUP BY source
 		ORDER BY avg_lat DESC
+		LIMIT 5
 	`, cutoff.Format(time.RFC3339))
 	if err != nil {
 		return nil, fmt.Errorf("usage: query channel latency: %w", err)
