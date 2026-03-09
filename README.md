@@ -24,12 +24,11 @@
 
 ---
 
-## ⚡ What is CliRelay (Enhanced Fork)?
+## ⚡ What is CliRelay?
 
-> **✨ This is a heavily modified and enhanced fork of the original project!**
-> Built upon the original core logic, this fork introduces massive improvements. We added precise backend channel management (API Key CRUD, channel naming/notes, `latency_ms` tracking, independent enable/disable toggles for keys, and a public `/manage/` usage query endpoint) and **completely rebuilt the frontend dashboard [codeProxy](https://github.com/kittors/codeProxy) from scratch** using modern tools (React 19 + Vite 7 + Tailwind CSS v4, featuring dark mode, immersive data monitoring, KPI metrics, and configuration snapshot tools).
+> **✨ Heavily enhanced fork of the [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) project** — rebuilt with a production-grade management layer, enterprise-quality monitoring, and a full React-based admin dashboard.
 
-CliRelay lets you **proxy requests** from AI coding tools (Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, etc.) through a single local endpoint. Authenticate once with OAuth, add your API keys — or both — and CliRelay handles the rest:
+CliRelay lets you **proxy requests** from AI coding tools (Claude Code, Gemini CLI, OpenAI Codex, Amp CLI, Kiro, etc.) through a single unified endpoint. Authenticate once with OAuth, add your API keys — or both — and CliRelay handles intelligent routing, load balancing, failover, and usage logging automatically.
 
 ```
 ┌───────────────────────┐         ┌──────────────┐         ┌────────────────────┐
@@ -38,24 +37,117 @@ CliRelay lets you **proxy requests** from AI coding tools (Claude Code, Gemini C
 │  Claude Code          │ ──────▶ │   CliRelay   │ ──────▶ │  OpenAI / Codex    │
 │  Gemini CLI           │         │   :8317      │ ──────▶ │  Anthropic Claude  │
 │  OpenAI Codex         │         │              │ ──────▶ │  Qwen / iFlow      │
-│  Amp CLI / IDE        │         │              │ ──────▶ │  OpenRouter / ...  │
-│  Any OAI-compatible   │         └──────────────┘         └────────────────────┘
+│  Amp CLI / IDE        │         │              │ ──────▶ │  Kiro / Vertex     │
+│  Kiro / Any OAI-compat│         └──────────────┘         └────────────────────┘
 └───────────────────────┘
 ```
 
-## ✨ Enhanced Fork Features
+## ✨ Key Features
+
+### 🔌 Multi-Provider Proxy Engine
 
 | Feature | Description |
 |:--------|:------------|
-| � **Advanced API Key Mgmt** | Full CRUD control for API Keys, with support for custom naming/notes and independent **enable/disable** toggles. |
-| ⏱️ **Precision Tracking** | Added precise latency tracking (`latency_ms`), detailed usage stats, and public query endpoints over `/manage/` routes. |
-| 🖥️ **All-New React 19 Panel** | A **completely rebuilt** dashboard [codeProxy](https://github.com/kittors/codeProxy): featuring ECharts monitoring, dark mode, KPI metrics, and config snapshot import/export. |
-| � **Multi-Provider Environment** | Support for OpenAI, Gemini, Claude, Codex, Qwen, iFlow, Vertex, and any OpenAI-compatible upstream providers. |
-| ⚖️ **Load Balancing & Failover** | Intelligent round-robin or fill-first scheduling, with **auto-failover** to backup projects when account quotas are fully consumed. |
-| 🧩 **Go SDK & Streaming Hub** | Native Go SDK for embedding the proxy target; full SSE streaming and non-streaming response handling with Keep-Alive. |
-| 🧠 **Multimodal & Tool Calling** | Seamless support for text + image multimodal inputs and comprehensive abstract Function Calling (Tools) capabilities. |
-| 🛡️ **Security & Cloaking Shield** | Robust API Key authentication, TLS handling, strict localhost panel isolation, and precise upstream request cloaking. |
-| 🗄️ **Redis Data Persistence** | Auto-snapshots API statistics to Redis periodically and on shutdown, guaranteeing **zero data loss** of usage charts across server restarts. |
+| 🌐 **Unified Endpoint** | One `http://localhost:8317` handles requests for all providers (Gemini, Claude, OpenAI, Codex, Qwen, iFlow, Vertex, Kiro, MiniMax, Grok, and more) |
+| ⚖️ **Smart Load Balancing** | Round-robin or fill-first scheduling across multiple API keys for the same provider |
+| 🔄 **Auto Failover** | Automatically switches to backup channels when quotas are exhausted or errors occur |
+| 🧠 **Multimodal Support** | Full support for text + image inputs, function calling (tools), and streaming SSE responses |
+| 🔗 **OpenAI-Compatible** | Works with any upstream that speaks the OpenAI Chat Completions protocol |
+
+### 📊 Request Logging & Monitoring (SQLite)
+
+| Feature | Description |
+|:--------|:------------|
+| 📝 **Full Request Capture** | Every API request is logged to SQLite with timestamp, model, tokens (in/out/reasoning/cache), latency, status, and source channel |
+| 💬 **Message Body Storage** | Full request/response message content captured (including streaming SSE reassembly), with 100KB smart truncation |
+| 🔍 **Advanced Querying** | Filter logs by API Key, model, status, time range with efficient pagination (LIMIT/OFFSET) |
+| 📈 **Analytics Aggregation** | Pre-computed dashboards: daily trends, model distribution, hourly heatmaps, per-key statistics |
+| 🏥 **Health Score Engine** | Real-time 0–100 health score considering success rate, latency, active channels, and error patterns |
+| 📡 **WebSocket Monitoring** | Live system stats streamed via WebSocket: CPU, memory, goroutines, network I/O, DB size |
+| 🗄️ **No-CGO SQLite** | Uses `modernc.org/sqlite` — pure Go, no CGO dependency, easy cross-compilation |
+
+### 🔐 API Key & Access Management
+
+| Feature | Description |
+|:--------|:------------|
+| 🔑 **API Key CRUD** | Create, edit, delete API keys via Management API — each with custom name, notes, and independent enable/disable toggle |
+| 📊 **Per-Key Quotas** | Set max token / request quotas per key with automatic enforcement |
+| ⏱️ **Rate Limiting** | Per-key rate limiting (requests per minute/hour) |
+| 🔒 **Key Masking** | API keys are always displayed masked (`sk-***xxx`) in UI and logs |
+| 🌍 **Public Lookup Page** | End users can query their own usage stats and request logs via a public self-service page (no login required) |
+
+### 🔗 Provider Channel Management
+
+| Feature | Description |
+|:--------|:------------|
+| 📋 **Multi-Tab Config** | Manage channels organized by provider type: Gemini, Claude, Codex, Vertex, OpenAI Compatible, Ampcode |
+| 🏷️ **Channel Naming** | Each channel can have a custom name, notes, proxy URL, custom headers, and model alias mappings |
+| ⏱️ **Latency Tracking** | Average latency (`latency_ms`) tracked per channel with visual indicators |
+| 🔄 **Enable/Disable** | Individually toggle channels on/off without deletion |
+| 🚫 **Model Exclusions** | Exclude specific models from a channel (e.g., block expensive models on backup keys) |
+| 📊 **Channel Stats** | Per-channel success/fail counts and model availability displayed on each channel card |
+
+### 🛡️ Security & Authentication
+
+| Feature | Description |
+|:--------|:------------|
+| 🔐 **OAuth Support** | Native OAuth flows for Gemini, Claude, Codex, Qwen, iFlow (service-account or browser-based) |
+| 🔒 **TLS Handling** | Configurable TLS settings for upstream communication |
+| 🏠 **Panel Isolation** | Management panel access controlled independently with admin password |
+| 🛡️ **Request Cloaking** | Upstream requests are stripped of client-identifying headers for privacy |
+
+### 🗄️ Data Persistence
+
+| Feature | Description |
+|:--------|:------------|
+| 💾 **SQLite Storage** | All usage data, request logs, and message bodies stored in local SQLite database |
+| 🔄 **Redis Backup** | Optional Redis integration for periodic snapshotting and cross-restart metric preservation |
+| 📦 **Config Snapshots** | Import/export entire system configuration as JSON for backup and migration |
+
+## 📸 Management Panel Preview
+
+The **[codeProxy](https://github.com/kittors/codeProxy)** dashboard provides a stunning, modern web UI for managing your CliRelay instance:
+
+<p align="center">
+  <img src="docs/images/dashboard.png" width="100%" />
+</p>
+<p align="center"><em>Dashboard — KPI metrics, health score, real-time system monitoring, channel latency ranking</em></p>
+
+<p align="center">
+  <img src="docs/images/monitor.png" width="48%" />
+  <img src="docs/images/providers.png" width="48%" />
+</p>
+<p align="center"><em>Monitor Center with charts & analysis | AI Provider channel management</em></p>
+
+<p align="center">
+  <img src="docs/images/request-logs.png" width="100%" />
+</p>
+<p align="center"><em>Request Logs — Virtual scrolling, multi-filter, token hover, error detail modal</em></p>
+
+> 🔗 See the full [codeProxy README](https://github.com/kittors/codeProxy) for more screenshots and feature details.
+
+## 🏗️ Supported Providers
+
+<table>
+<tr>
+<td align="center"><strong>🟢 Google Gemini</strong><br/>OAuth + API Key</td>
+<td align="center"><strong>🟣 Anthropic Claude</strong><br/>OAuth + API Key</td>
+<td align="center"><strong>⚫ OpenAI Codex</strong><br/>OAuth</td>
+</tr>
+<tr>
+<td align="center"><strong>🔵 Qwen Code</strong><br/>OAuth</td>
+<td align="center"><strong>🟡 iFlow (GLM)</strong><br/>OAuth</td>
+<td align="center"><strong>🟠 Vertex AI</strong><br/>API Key</td>
+</tr>
+<tr>
+<td align="center"><strong>🔴 Kimi</strong><br/>API Key</td>
+<td align="center"><strong>🟤 Kiro</strong><br/>API Key</td>
+<td align="center"><strong>🟣 MiniMax</strong><br/>API Key</td>
+</tr>
+<tr>
+<td align="center" colspan="3"><strong>🔗 Any OpenAI-compatible upstream</strong> (OpenRouter, Grok, etc.)</td>
+</tr>
+</table>
 
 ## 🚀 Quick Start
 
@@ -84,10 +176,10 @@ docker compose up -d
 
 ### 🗄️ Enabling Data Persistence
 
-By default, API usage logs and charts are stored in memory and reset on restart. To permanently save your data across deployments:
+By default, API usage logs are stored in SQLite for persistence. For additional backup:
 1. Ensure you have a Redis server running.
 2. Edit `config.yaml` and set `redis.enable: true` with your Redis address.
-CliRelay will automatically snap and restore traffic metrics on every startup!
+CliRelay will automatically snapshot and restore traffic metrics on every startup!
 
 ### 3️⃣ Point Your Tools
 
@@ -105,28 +197,9 @@ requires_openai_auth = true
 
 ## 🖥️ Management Panel
 
-The **[codeProxy](https://github.com/kittors/codeProxy)** frontend provides a modern management dashboard for CliRelay:
-
-- 📊 Real-time usage monitoring & statistics
-- ⚙️ Visual configuration editing
-- 🔐 OAuth provider management
-- 📋 Structured log viewer
-
-<details>
-<summary>📸 Dashboard Screenshots</summary>
-
-<p align="center">
-  <img src="assets/codeproxy/iShot_2026-03-06_10.51.59.png" width="48%" />
-  <img src="assets/codeproxy/iShot_2026-03-06_10.52.09.png" width="48%" />
-</p>
-<p align="center">
-  <img src="assets/codeproxy/iShot_2026-03-06_10.52.33.png" width="48%" />
-  <img src="assets/codeproxy/iShot_2026-03-06_10.54.03.png" width="48%" />
-</p>
-</details>
+Install and run the **[codeProxy](https://github.com/kittors/codeProxy)** frontend:
 
 ```bash
-# Clone and start the management panel
 git clone https://github.com/kittors/codeProxy.git
 cd codeProxy
 bun install
@@ -134,32 +207,19 @@ bun run dev
 # Visit http://localhost:5173
 ```
 
-## 🏗️ Supported Providers
-
-<table>
-<tr>
-<td align="center"><strong>🟢 Google Gemini</strong><br/>OAuth + API Key</td>
-<td align="center"><strong>🟣 Anthropic Claude</strong><br/>OAuth + API Key</td>
-<td align="center"><strong>⚫ OpenAI Codex</strong><br/>OAuth</td>
-</tr>
-<tr>
-<td align="center"><strong>🔵 Qwen Code</strong><br/>OAuth</td>
-<td align="center"><strong>🟡 iFlow (GLM)</strong><br/>OAuth</td>
-<td align="center"><strong>🟠 Vertex AI</strong><br/>API Key</td>
-</tr>
-<tr>
-<td align="center" colspan="3"><strong>🔗 Any OpenAI-compatible upstream</strong> (OpenRouter, etc.)</td>
-</tr>
-</table>
-
 ## 📐 Architecture
 
 ```
 CliRelay/
 ├── cmd/              # Entry point
 ├── internal/         # Core proxy logic, translators, handlers
+│   ├── handler/      # HTTP request handlers (chat, models, management)
+│   ├── translator/   # Provider-specific request/response translators
+│   ├── scheduler/    # Load balancing & channel selection
+│   ├── database/     # SQLite operations & migration
+│   └── monitor/      # Health check & system stats
 ├── sdk/              # Reusable Go SDK
-├── auths/            # Authentication flows
+├── auths/            # OAuth authentication flows
 ├── examples/         # Custom provider examples
 ├── docs/             # SDK & API documentation
 ├── config.yaml       # Runtime configuration
@@ -207,7 +267,6 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 This project is a deeply enhanced fork built upon the excellent core logic of the open-source **[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** project.
 We want to express our deepest gratitude to the original **CLIProxyAPI** project and all its contributors!
 
-It is thanks to the solid, innovative proxy distribution foundation built by the upstream that we were able to stand on the shoulders of giants. This allowed us to develop unique advanced management features (like API Key tracking & control) and rebuild an entirely new frontend dashboard from scratch.
+It is thanks to the solid, innovative proxy distribution foundation built by the upstream that we were able to stand on the shoulders of giants. This allowed us to develop unique advanced management features (like API Key tracking & control, full request logging with SQLite, and real-time system monitoring) and rebuild an entirely new frontend dashboard from scratch.
 
 A huge salute to the spirit of open source! ❤️
-
