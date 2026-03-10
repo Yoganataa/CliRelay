@@ -256,6 +256,23 @@ type ModelSnapshot struct {
 	Details       []RequestDetail `json:"details"`
 }
 
+// SanitizeForPublic strips sensitive fields (provider API keys stored in Source,
+// and AuthIndex) from all request details in the snapshot. This MUST be called
+// before returning data through any public (unauthenticated) endpoint.
+func (s *StatisticsSnapshot) SanitizeForPublic() {
+	for apiKey, apiSnap := range s.APIs {
+		for modelName, modelSnap := range apiSnap.Models {
+			for i := range modelSnap.Details {
+				modelSnap.Details[i].Source = ""
+				modelSnap.Details[i].AuthIndex = ""
+				modelSnap.Details[i].ChannelName = ""
+			}
+			apiSnap.Models[modelName] = modelSnap
+		}
+		s.APIs[apiKey] = apiSnap
+	}
+}
+
 var defaultRequestStatistics = NewRequestStatistics()
 
 // GetRequestStatistics returns the shared statistics store.

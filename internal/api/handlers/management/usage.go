@@ -80,6 +80,10 @@ func (h *Handler) GetPublicUsageByAPIKey(c *gin.Context) {
 		},
 	}
 
+	// SECURITY: Strip sensitive fields (provider API keys, auth indices)
+	// from the public response to prevent credential leakage.
+	filteredSnapshot.SanitizeForPublic()
+
 	c.JSON(http.StatusOK, gin.H{
 		"usage":   filteredSnapshot,
 		"api_key": apiKey,
