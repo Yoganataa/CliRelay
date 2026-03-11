@@ -106,9 +106,17 @@ func MigrateAPIKeysFromConfig(cfg *config.Config, configFilePath string) int {
 		return 0
 	}
 	if count > 0 {
-		// Already migrated. Clear config slices to prevent stale data in YAML.
+		// Already migrated. Clear config slices and clean YAML if stale data remains.
+		needsClean := len(cfg.APIKeys) > 0 || len(cfg.APIKeyEntries) > 0
 		cfg.APIKeys = nil
 		cfg.APIKeyEntries = nil
+		if needsClean && configFilePath != "" {
+			if err := config.SaveConfigPreserveComments(configFilePath, cfg); err != nil {
+				log.Warnf("usage: failed to clean stale api-keys from config.yaml: %v", err)
+			} else {
+				log.Infof("usage: cleaned stale api-keys/api-key-entries from config.yaml")
+			}
+		}
 		return 0
 	}
 
