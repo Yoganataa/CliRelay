@@ -164,9 +164,11 @@ func QuotaMiddleware() gin.HandlerFunc {
 		tpmLimit := parseIntMetadata(metadata, "tpm-limit")
 
 		// Cache limits for dashboard snapshot
-		if rpmLimit > 0 || tpmLimit > 0 {
-			UpdateKeyLimits(apiKey, rpmLimit, tpmLimit)
-		}
+		UpdateKeyLimits(apiKey, rpmLimit, tpmLimit)
+
+		// ── Always record this request for system-wide RPM tracking ──
+		rpmTracker := getRPMTracker(apiKey)
+		rpmTracker.add()
 
 		// No limits configured — skip all checks
 		if dailyLimit <= 0 && totalQuota <= 0 && rpmLimit <= 0 && tpmLimit <= 0 {
@@ -176,8 +178,7 @@ func QuotaMiddleware() gin.HandlerFunc {
 
 		// --- RPM check (sliding window, in-memory) ---
 		if rpmLimit > 0 {
-			tracker := getRPMTracker(apiKey)
-			if tracker.count() >= rpmLimit {
+			if rpmTracker.count() > rpmLimit {
 				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 					"error": map[string]interface{}{
 						"message": fmt.Sprintf("RPM limit (%d requests/min) exceeded for this API key", rpmLimit),
@@ -187,8 +188,6 @@ func QuotaMiddleware() gin.HandlerFunc {
 				})
 				return
 			}
-			// Record this request in the RPM window
-			tracker.add()
 		}
 
 		// --- TPM check (sliding window, in-memory) ---
