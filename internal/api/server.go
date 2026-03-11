@@ -40,6 +40,8 @@ import (
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1307,10 +1309,10 @@ func ModelRestrictionMiddleware() gin.HandlerFunc {
 	}
 }
 
-// SystemPromptMiddleware injects a system-prompt message (from API key config)
-// as the first entry in the "messages" array of a POST request body.
-// It only operates on POST requests that have a recognized "messages" field
-// (OpenAI chat-completions / Claude messages format).
+// SystemPromptMiddleware injects a system-prompt (from API key config) into
+// POST request bodies. It supports two formats:
+//   - OpenAI Chat Completions / Claude: prepends a system message to "messages"
+//   - OpenAI Responses API: prepends to the "instructions" field
 func SystemPromptMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method != http.MethodPost {
@@ -1318,98 +1320,81 @@ func SystemPromptMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		log.Debugf("[SystemPrompt] POST request to %s", c.Request.URL.Path)
-
 		metadataVal, exists := c.Get("accessMetadata")
 		if !exists {
-			log.Debug("[SystemPrompt] no accessMetadata found, skipping")
 			c.Next()
 			return
 		}
 		metadata, ok := metadataVal.(map[string]string)
 		if !ok {
-			log.Debugf("[SystemPrompt] accessMetadata is not map[string]string, type=%T", metadataVal)
 			c.Next()
 			return
 		}
-
-		log.Debugf("[SystemPrompt] metadata keys: %v", func() []string {
-			keys := make([]string, 0, len(metadata))
-			for k := range metadata {
-				keys = append(keys, k)
-			}
-			return keys
-		}())
-
 		systemPrompt, exists := metadata["system-prompt"]
 		if !exists || strings.TrimSpace(systemPrompt) == "" {
-			log.Debug("[SystemPrompt] no system-prompt in metadata, skipping")
 			c.Next()
 			return
 		}
-
-		log.Debugf("[SystemPrompt] found system-prompt: %q", systemPrompt)
 
 		// Read body
 		bodyBytes, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			log.Debugf("[SystemPrompt] failed to read body: %v", err)
 			c.Next()
 			return
 		}
 
-		log.Debugf("[SystemPrompt] body length: %d bytes", len(bodyBytes))
+		var newBody []byte
 
-		// Parse as generic JSON
-		var body map[string]interface{}
-		if err := json.Unmarshal(bodyBytes, &body); err != nil {
-			log.Debugf("[SystemPrompt] body is not valid JSON: %v", err)
+		// Try Chat Completions format first (has "messages" array)
+		if gjson.GetBytes(bodyBytes, "messages").Exists() && gjson.GetBytes(bodyBytes, "messages").IsArray() {
+			// Build system message JSON and prepend to messages array
+			sysMsg := map[string]interface{}{
+				"role":    "system",
+				"content": systemPrompt,
+			}
+			var body map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &body); err != nil {
+				c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				c.Next()
+				return
+			}
+			messages, _ := body["messages"].([]interface{})
+			newMessages := make([]interface{}, 0, len(messages)+1)
+			newMessages = append(newMessages, sysMsg)
+			newMessages = append(newMessages, messages...)
+			body["messages"] = newMessages
+			newBody, err = json.Marshal(body)
+			if err != nil {
+				c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				c.Next()
+				return
+			}
+			log.Debugf("[SystemPrompt] injected into messages (count: %d→%d)", len(messages), len(newMessages))
+
+		} else if gjson.GetBytes(bodyBytes, "input").Exists() {
+			// Responses API format: inject into "instructions" field
+			existing := strings.TrimSpace(gjson.GetBytes(bodyBytes, "instructions").String())
+			var combined string
+			if existing != "" {
+				combined = systemPrompt + "\n\n" + existing
+			} else {
+				combined = systemPrompt
+			}
+			newBody, _ = sjson.SetBytes(bodyBytes, "instructions", combined)
+			if newBody == nil {
+				c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				c.Next()
+				return
+			}
+			log.Debugf("[SystemPrompt] injected into instructions (Responses API)")
+
+		} else {
+			// Unknown format — pass through
 			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			c.Next()
 			return
 		}
 
-		// Check for "messages" field (OpenAI / Claude format)
-		messagesRaw, hasMessages := body["messages"]
-		if !hasMessages {
-			log.Debug("[SystemPrompt] no 'messages' field in body, skipping")
-			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			c.Next()
-			return
-		}
-
-		messages, ok := messagesRaw.([]interface{})
-		if !ok {
-			log.Debugf("[SystemPrompt] 'messages' is not an array, type=%T", messagesRaw)
-			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			c.Next()
-			return
-		}
-
-		log.Debugf("[SystemPrompt] injecting system prompt into messages (original count: %d)", len(messages))
-
-		// Build the system message to inject
-		sysMsg := map[string]interface{}{
-			"role":    "system",
-			"content": systemPrompt,
-		}
-
-		// Prepend — push system message to the front
-		newMessages := make([]interface{}, 0, len(messages)+1)
-		newMessages = append(newMessages, sysMsg)
-		newMessages = append(newMessages, messages...)
-		body["messages"] = newMessages
-
-		// Re-serialize
-		newBody, err := json.Marshal(body)
-		if err != nil {
-			log.Debugf("[SystemPrompt] failed to marshal new body: %v", err)
-			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			c.Next()
-			return
-		}
-
-		log.Debugf("[SystemPrompt] ✅ successfully injected, new body length: %d bytes, new message count: %d", len(newBody), len(newMessages))
 		c.Request.Body = io.NopCloser(bytes.NewReader(newBody))
 		c.Request.ContentLength = int64(len(newBody))
 		c.Next()
