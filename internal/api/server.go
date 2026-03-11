@@ -500,6 +500,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/dashboard-summary", s.mgmt.GetDashboardSummary)
 		mgmt.GET("/system-stats", s.mgmt.GetSystemStats)
 		mgmt.GET("/system-stats/ws", s.mgmt.SystemStatsWebSocket)
+		mgmt.GET("/models", s.mgmt.GetModels)
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
 		mgmt.GET("/usage/export", s.mgmt.ExportUsageStatistics)
 		mgmt.POST("/usage/import", s.mgmt.ImportUsageStatistics)

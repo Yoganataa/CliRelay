@@ -148,6 +148,31 @@ func parseIntMetadata(metadata map[string]string, key string) int {
 	return n
 }
 
+// ConcurrencySnapshot represents a point-in-time view of in-flight requests for a single API key.
+type ConcurrencySnapshot struct {
+	Key     string `json:"key"`     // masked API key
+	Current int64  `json:"current"` // number of in-flight requests
+}
+
+// GetConcurrencySnapshot returns a snapshot of all API keys with active in-flight requests.
+// This is safe to call concurrently — sync.Map.Range is lock-free and does not block the hot write path.
+func GetConcurrencySnapshot() ([]ConcurrencySnapshot, int64) {
+	var items []ConcurrencySnapshot
+	var total int64
+	concurrencyTracker.Range(func(key, value any) bool {
+		v := value.(*atomic.Int64).Load()
+		if v > 0 {
+			total += v
+			items = append(items, ConcurrencySnapshot{
+				Key:     maskKey(key.(string)),
+				Current: v,
+			})
+		}
+		return true
+	})
+	return items, total
+}
+
 // maskKey returns a masked version of the API key for logging.
 func maskKey(key string) string {
 	if len(key) <= 8 {

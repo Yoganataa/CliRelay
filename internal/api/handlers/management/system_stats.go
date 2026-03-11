@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/mem"
 	psnet "github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
@@ -43,12 +45,22 @@ type SystemStats struct {
 	NetSendRate  float64 `json:"net_send_rate"` // bytes/sec
 	NetRecvRate  float64 `json:"net_recv_rate"` // bytes/sec
 
+	// Disk
+	DiskTotal uint64  `json:"disk_total"`
+	DiskUsed  uint64  `json:"disk_used"`
+	DiskFree  uint64  `json:"disk_free"`
+	DiskPct   float64 `json:"disk_pct"`
+
 	// Uptime
 	UptimeSeconds int64  `json:"uptime_seconds"`
 	StartTime     string `json:"start_time"`
 
 	// Channel latency
 	ChannelLatency []usage.ChannelLatency `json:"channel_latency"`
+
+	// Concurrency
+	ActiveConcurrency []middleware.ConcurrencySnapshot `json:"active_concurrency"`
+	TotalInFlight     int64                            `json:"total_in_flight"`
 }
 
 // network baseline for rate calculation
@@ -136,10 +148,21 @@ func (h *Handler) collectSystemStats() SystemStats {
 		netMu.Unlock()
 	}
 
+	// ── Disk usage ──
+	if du, err := disk.Usage("/"); err == nil {
+		stats.DiskTotal = du.Total
+		stats.DiskUsed = du.Used
+		stats.DiskFree = du.Free
+		stats.DiskPct = du.UsedPercent
+	}
+
 	// ── Channel latency (from DB) ──
 	if cl, err := usage.GetChannelAvgLatency(7); err == nil {
 		stats.ChannelLatency = cl
 	}
+
+	// ── Concurrency snapshot ──
+	stats.ActiveConcurrency, stats.TotalInFlight = middleware.GetConcurrencySnapshot()
 
 	return stats
 }
