@@ -41,6 +41,25 @@ var (
 	DefaultConfigPath = ""
 )
 
+type cliModeOptions struct {
+	vertexImport     string
+	projectID        string
+	password         string
+	login            bool
+	codexLogin       bool
+	codexDeviceLogin bool
+	claudeLogin      bool
+	qwenLogin        bool
+	iflowLogin       bool
+	iflowCookie      bool
+	antigravityLogin bool
+	kimiLogin        bool
+	tuiMode          bool
+	standalone       bool
+	isCloudDeploy    bool
+	configFileExists bool
+}
+
 // init initializes the shared logger setup.
 func init() {
 	logging.SetupBaseLogger()
@@ -455,118 +474,134 @@ func main() {
 	// Register built-in access providers before constructing services.
 	configaccess.Register(&cfg.SDKConfig)
 
-	// Handle different command modes based on the provided flags.
+	runSelectedMode(cfg, configFilePath, options, cliModeOptions{
+		vertexImport:     vertexImport,
+		projectID:        projectID,
+		password:         password,
+		login:            login,
+		codexLogin:       codexLogin,
+		codexDeviceLogin: codexDeviceLogin,
+		claudeLogin:      claudeLogin,
+		qwenLogin:        qwenLogin,
+		iflowLogin:       iflowLogin,
+		iflowCookie:      iflowCookie,
+		antigravityLogin: antigravityLogin,
+		kimiLogin:        kimiLogin,
+		tuiMode:          tuiMode,
+		standalone:       standalone,
+		isCloudDeploy:    isCloudDeploy,
+		configFileExists: configFileExists,
+	})
+}
 
-	if vertexImport != "" {
-		// Handle Vertex service account import
-		cmd.DoVertexImport(cfg, vertexImport)
-	} else if login {
-		// Handle Google/Gemini login
-		cmd.DoLogin(cfg, projectID, options)
-	} else if antigravityLogin {
-		// Handle Antigravity login
+func runSelectedMode(cfg *config.Config, configFilePath string, options *cmd.LoginOptions, mode cliModeOptions) {
+	switch {
+	case mode.vertexImport != "":
+		cmd.DoVertexImport(cfg, mode.vertexImport)
+	case mode.login:
+		cmd.DoLogin(cfg, mode.projectID, options)
+	case mode.antigravityLogin:
 		cmd.DoAntigravityLogin(cfg, options)
-	} else if codexLogin {
-		// Handle Codex login
+	case mode.codexLogin:
 		cmd.DoCodexLogin(cfg, options)
-	} else if codexDeviceLogin {
-		// Handle Codex device-code login
+	case mode.codexDeviceLogin:
 		cmd.DoCodexDeviceLogin(cfg, options)
-	} else if claudeLogin {
-		// Handle Claude login
+	case mode.claudeLogin:
 		cmd.DoClaudeLogin(cfg, options)
-	} else if qwenLogin {
+	case mode.qwenLogin:
 		cmd.DoQwenLogin(cfg, options)
-	} else if iflowLogin {
+	case mode.iflowLogin:
 		cmd.DoIFlowLogin(cfg, options)
-	} else if iflowCookie {
+	case mode.iflowCookie:
 		cmd.DoIFlowCookieAuth(cfg, options)
-	} else if kimiLogin {
+	case mode.kimiLogin:
 		cmd.DoKimiLogin(cfg, options)
-	} else {
-		// In cloud deploy mode without config file, just wait for shutdown signals
-		if isCloudDeploy && !configFileExists {
-			// No config file available, just wait for shutdown
-			cmd.WaitForCloudDeploy()
-			return
-		}
-		if tuiMode {
-			if standalone {
-				// Standalone mode: start an embedded local server and connect TUI client to it.
-				managementasset.StartAutoUpdater(context.Background(), configFilePath)
-				hook := tui.NewLogHook(2000)
-				hook.SetFormatter(&logging.LogFormatter{})
-				log.AddHook(hook)
+	default:
+		runServiceMode(cfg, configFilePath, mode.password, mode)
+	}
+}
 
-				origStdout := os.Stdout
-				origStderr := os.Stderr
-				origLogOutput := log.StandardLogger().Out
-				log.SetOutput(io.Discard)
+func runServiceMode(cfg *config.Config, configFilePath, password string, mode cliModeOptions) {
+	if mode.isCloudDeploy && !mode.configFileExists {
+		cmd.WaitForCloudDeploy()
+		return
+	}
+	if !mode.tuiMode {
+		managementasset.StartAutoUpdater(context.Background(), configFilePath)
+		cmd.StartService(cfg, configFilePath, password)
+		return
+	}
+	if mode.standalone {
+		runStandaloneTUI(cfg, configFilePath, password)
+		return
+	}
+	if errRun := tui.Run(cfg.Port, password, nil, os.Stdout); errRun != nil {
+		fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+	}
+}
 
-				devNull, errOpenDevNull := os.Open(os.DevNull)
-				if errOpenDevNull == nil {
-					os.Stdout = devNull
-					os.Stderr = devNull
-				}
+func runStandaloneTUI(cfg *config.Config, configFilePath, password string) {
+	managementasset.StartAutoUpdater(context.Background(), configFilePath)
+	hook := tui.NewLogHook(2000)
+	hook.SetFormatter(&logging.LogFormatter{})
+	log.AddHook(hook)
 
-				restoreIO := func() {
-					os.Stdout = origStdout
-					os.Stderr = origStderr
-					log.SetOutput(origLogOutput)
-					if devNull != nil {
-						_ = devNull.Close()
-					}
-				}
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+	origLogOutput := log.StandardLogger().Out
+	log.SetOutput(io.Discard)
 
-				localMgmtPassword := fmt.Sprintf("tui-%d-%d", os.Getpid(), time.Now().UnixNano())
-				if password == "" {
-					password = localMgmtPassword
-				}
+	devNull, errOpenDevNull := os.Open(os.DevNull)
+	if errOpenDevNull == nil {
+		os.Stdout = devNull
+		os.Stderr = devNull
+	}
 
-				cancel, done := cmd.StartServiceBackground(cfg, configFilePath, password)
-
-				client := tui.NewClient(cfg.Port, password)
-				ready := false
-				backoff := 100 * time.Millisecond
-				for i := 0; i < 30; i++ {
-					if _, errGetConfig := client.GetConfig(); errGetConfig == nil {
-						ready = true
-						break
-					}
-					time.Sleep(backoff)
-					if backoff < time.Second {
-						backoff = time.Duration(float64(backoff) * 1.5)
-					}
-				}
-
-				if !ready {
-					restoreIO()
-					cancel()
-					<-done
-					fmt.Fprintf(os.Stderr, "TUI error: embedded server is not ready\n")
-					return
-				}
-
-				if errRun := tui.Run(cfg.Port, password, hook, origStdout); errRun != nil {
-					restoreIO()
-					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
-				} else {
-					restoreIO()
-				}
-
-				cancel()
-				<-done
-			} else {
-				// Default TUI mode: pure management client.
-				// The proxy server must already be running.
-				if errRun := tui.Run(cfg.Port, password, nil, os.Stdout); errRun != nil {
-					fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
-				}
-			}
-		} else {
-			// Start the main proxy service
-			managementasset.StartAutoUpdater(context.Background(), configFilePath)
-			cmd.StartService(cfg, configFilePath, password)
+	restoreIO := func() {
+		os.Stdout = origStdout
+		os.Stderr = origStderr
+		log.SetOutput(origLogOutput)
+		if devNull != nil {
+			_ = devNull.Close()
 		}
 	}
+
+	localMgmtPassword := fmt.Sprintf("tui-%d-%d", os.Getpid(), time.Now().UnixNano())
+	if password == "" {
+		password = localMgmtPassword
+	}
+
+	cancel, done := cmd.StartServiceBackground(cfg, configFilePath, password)
+
+	client := tui.NewClient(cfg.Port, password)
+	ready := false
+	backoff := 100 * time.Millisecond
+	for i := 0; i < 30; i++ {
+		if _, errGetConfig := client.GetConfig(); errGetConfig == nil {
+			ready = true
+			break
+		}
+		time.Sleep(backoff)
+		if backoff < time.Second {
+			backoff = time.Duration(float64(backoff) * 1.5)
+		}
+	}
+
+	if !ready {
+		restoreIO()
+		cancel()
+		<-done
+		fmt.Fprintf(os.Stderr, "TUI error: embedded server is not ready\n")
+		return
+	}
+
+	if errRun := tui.Run(cfg.Port, password, hook, origStdout); errRun != nil {
+		restoreIO()
+		fmt.Fprintf(os.Stderr, "TUI error: %v\n", errRun)
+	} else {
+		restoreIO()
+	}
+
+	cancel()
+	<-done
 }

@@ -23,6 +23,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/access"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v6/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules"
@@ -498,7 +499,7 @@ func (s *Server) registerManagementRoutes() {
 	log.Info("management routes registered after secret key configuration")
 
 	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), bodyutil.LimitBodyMiddleware(bodyutil.ManagementBodyLimit))
 	{
 		mgmt.GET("/dashboard-summary", s.mgmt.GetDashboardSummary)
 		mgmt.GET("/system-stats", s.mgmt.GetSystemStats)
@@ -1009,6 +1010,10 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	if s.mgmt != nil {
+		s.mgmt.Close()
+	}
+
 	// Shutdown the HTTP server.
 	if err := s.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
@@ -1275,13 +1280,15 @@ func ModelRestrictionMiddleware() gin.HandlerFunc {
 		}
 
 		// Read the body to extract the model field
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		bodyBytes, err := bodyutil.ReadRequestBody(c, bodyutil.DefaultRequestBodyLimit)
 		if err != nil {
+			if bodyutil.IsTooLarge(err) {
+				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+				return
+			}
 			c.Next()
 			return
 		}
-		// Restore body for downstream handlers
-		c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 		// Extract model field from JSON
 		var bodyObj struct {
@@ -1337,8 +1344,12 @@ func SystemPromptMiddleware() gin.HandlerFunc {
 		}
 
 		// Read body
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		bodyBytes, err := bodyutil.ReadRequestBody(c, bodyutil.DefaultRequestBodyLimit)
 		if err != nil {
+			if bodyutil.IsTooLarge(err) {
+				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+				return
+			}
 			c.Next()
 			return
 		}

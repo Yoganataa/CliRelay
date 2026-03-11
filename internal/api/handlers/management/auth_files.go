@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
@@ -574,8 +575,12 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "name must end with .json"})
 		return
 	}
-	data, err := io.ReadAll(c.Request.Body)
+	data, err := bodyutil.ReadRequestBody(c, bodyutil.AuthFileBodyLimit)
 	if err != nil {
+		if bodyutil.IsTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": "failed to read body"})
 		return
 	}
@@ -957,8 +962,7 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 }
 
 func (h *Handler) RequestAnthropicToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
+	ctx := detachedAuthContext(c)
 
 	fmt.Println("Initializing Claude authentication...")
 
@@ -1102,8 +1106,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 }
 
 func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
+	ctx := detachedAuthContext(c)
 	proxyHTTPClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, proxyHTTPClient)
 
@@ -1361,8 +1364,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 }
 
 func (h *Handler) RequestCodexToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
+	ctx := detachedAuthContext(c)
 
 	fmt.Println("Initializing Codex authentication...")
 
@@ -1507,8 +1509,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 }
 
 func (h *Handler) RequestAntigravityToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
+	ctx := detachedAuthContext(c)
 
 	fmt.Println("Initializing Antigravity authentication...")
 
@@ -1672,8 +1673,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 }
 
 func (h *Handler) RequestQwenToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
+	ctx := detachedAuthContext(c)
 
 	fmt.Println("Initializing Qwen authentication...")
 
@@ -1728,8 +1728,7 @@ func (h *Handler) RequestQwenToken(c *gin.Context) {
 }
 
 func (h *Handler) RequestKimiToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
+	ctx := detachedAuthContext(c)
 
 	fmt.Println("Initializing Kimi authentication...")
 
@@ -1805,8 +1804,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 }
 
 func (h *Handler) RequestIFlowToken(c *gin.Context) {
-	ctx := context.Background()
-	ctx = PopulateAuthContext(ctx, c)
+	ctx := detachedAuthContext(c)
 
 	fmt.Println("Initializing iFlow authentication...")
 
@@ -1919,7 +1917,7 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 }
 
 func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
-	ctx := context.Background()
+	ctx := requestAuthContext(c)
 
 	var payload struct {
 		Cookie string `json:"cookie"`
@@ -2430,9 +2428,33 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 
 // PopulateAuthContext extracts request info and adds it to the context
 func PopulateAuthContext(ctx context.Context, c *gin.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c == nil || c.Request == nil {
+		return ctx
+	}
 	info := &coreauth.RequestInfo{
 		Query:   c.Request.URL.Query(),
 		Headers: c.Request.Header,
 	}
 	return coreauth.WithRequestInfo(ctx, info)
+}
+
+func requestAuthContext(c *gin.Context) context.Context {
+	if c != nil && c.Request != nil {
+		if reqCtx := c.Request.Context(); reqCtx != nil {
+			return PopulateAuthContext(reqCtx, c)
+		}
+	}
+	return PopulateAuthContext(context.Background(), c)
+}
+
+func detachedAuthContext(c *gin.Context) context.Context {
+	if c != nil && c.Request != nil {
+		if reqCtx := c.Request.Context(); reqCtx != nil {
+			return PopulateAuthContext(context.WithoutCancel(reqCtx), c)
+		}
+	}
+	return PopulateAuthContext(context.Background(), c)
 }

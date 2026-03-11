@@ -1,14 +1,13 @@
 package management
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/vertex"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -37,8 +36,12 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 	}
 	defer file.Close()
 
-	data, err := io.ReadAll(file)
+	data, err := bodyutil.ReadAll(file, bodyutil.VertexCredentialBodyLimit)
 	if err != nil {
+		if bodyutil.IsTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
 		return
 	}
@@ -97,10 +100,7 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 		Metadata: metadata,
 	}
 
-	ctx := context.Background()
-	if reqCtx := c.Request.Context(); reqCtx != nil {
-		ctx = reqCtx
-	}
+	ctx := requestAuthContext(c)
 	savedPath, err := h.saveTokenRecord(ctx, record)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "save_failed", "message": err.Error()})

@@ -468,13 +468,14 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.ID = uuid.NewString()
 	}
 	auth.EnsureIndex()
+	snapshot := auth.Clone()
 	m.mu.Lock()
-	m.auths[auth.ID] = auth.Clone()
+	m.auths[auth.ID] = snapshot
 	m.mu.Unlock()
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
-	_ = m.persist(ctx, auth)
-	m.hook.OnAuthRegistered(ctx, auth.Clone())
-	return auth.Clone(), nil
+	_ = m.persist(ctx, snapshot)
+	m.hook.OnAuthRegistered(ctx, snapshot.Clone())
+	return snapshot.Clone(), nil
 }
 
 // Update replaces an existing auth entry and notifies hooks.
@@ -488,12 +489,13 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.indexAssigned = existing.indexAssigned
 	}
 	auth.EnsureIndex()
-	m.auths[auth.ID] = auth.Clone()
+	snapshot := auth.Clone()
+	m.auths[auth.ID] = snapshot
 	m.mu.Unlock()
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
-	_ = m.persist(ctx, auth)
-	m.hook.OnAuthUpdated(ctx, auth.Clone())
-	return auth.Clone(), nil
+	_ = m.persist(ctx, snapshot)
+	m.hook.OnAuthUpdated(ctx, snapshot.Clone())
+	return snapshot.Clone(), nil
 }
 
 // Load resets manager state from the backing store.

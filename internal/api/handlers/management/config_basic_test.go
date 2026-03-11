@@ -1,8 +1,13 @@
 package management
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
@@ -256,5 +261,21 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 	}
 	if cfg.OAuthModelAlias == nil {
 		t.Error("original config was mutated: OAuthModelAlias")
+	}
+}
+
+func TestPutConfigYAMLRejectsOversizedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := bytes.Repeat([]byte("a"), int(bodyutil.ConfigYAMLBodyLimit)+1)
+	c.Request = httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader(body))
+
+	h := &Handler{}
+	h.PutConfigYAML(c)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
 	}
 }

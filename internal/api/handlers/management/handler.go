@@ -49,6 +49,8 @@ type Handler struct {
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
 	startTime           time.Time
+	attemptCleanupStop  chan struct{}
+	attemptCleanupOnce  sync.Once
 }
 
 // NewHandler creates a new management handler instance.
@@ -66,6 +68,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
 		startTime:           time.Now(),
+		attemptCleanupStop:  make(chan struct{}),
 	}
 	h.startAttemptCleanup()
 	return h
@@ -77,10 +80,25 @@ func (h *Handler) startAttemptCleanup() {
 	go func() {
 		ticker := time.NewTicker(attemptCleanupInterval)
 		defer ticker.Stop()
-		for range ticker.C {
-			h.purgeStaleAttempts()
+		for {
+			select {
+			case <-ticker.C:
+				h.purgeStaleAttempts()
+			case <-h.attemptCleanupStop:
+				return
+			}
 		}
 	}()
+}
+
+// Close stops background cleanup workers owned by the management handler.
+func (h *Handler) Close() {
+	if h == nil {
+		return
+	}
+	h.attemptCleanupOnce.Do(func() {
+		close(h.attemptCleanupStop)
+	})
 }
 
 // purgeStaleAttempts removes IP entries that have been idle beyond attemptMaxIdleTime

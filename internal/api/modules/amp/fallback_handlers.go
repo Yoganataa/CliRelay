@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -116,15 +117,16 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 		requestPath := c.Request.URL.Path
 
 		// Read the request body to extract the model name
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		bodyBytes, err := bodyutil.ReadRequestBody(c, bodyutil.DefaultRequestBodyLimit)
 		if err != nil {
+			if bodyutil.IsTooLarge(err) {
+				c.AbortWithStatusJSON(413, gin.H{"error": "request body too large"})
+				return
+			}
 			log.Errorf("amp fallback: failed to read request body: %v", err)
 			handler(c)
 			return
 		}
-
-		// Restore the body for the handler to read
-		c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 		// Try to extract model from request body or URL path (for Gemini)
 		modelName := extractModelFromRequest(bodyBytes, c)
