@@ -15,10 +15,21 @@ C_BG_BLUE='\033[44m'; C_BG_GREEN='\033[42m'; C_BG_RED='\033[41m'
 SYM_OK="✓"; SYM_FAIL="✗"; SYM_ARROW="→"; SYM_DOT="·"; SYM_STAR="★"
 
 DOCKER_IMAGE_DEFAULT="ghcr.io/kittors/clirelay:latest"
-INSTALL_DIR="${CLIRELAY_DIR:-/opt/clirelay}"
 CONTAINER_NAME="clirelay"
 DEFAULT_PORT=8317
 TOTAL_STEPS=6
+OS_NAME="$(uname -s)"
+
+case "${OS_NAME}" in
+    Darwin)
+        DEFAULT_INSTALL_DIR="${HOME}/.clirelay"
+        ;;
+    *)
+        DEFAULT_INSTALL_DIR="/opt/clirelay"
+        ;;
+esac
+
+INSTALL_DIR="${CLIRELAY_DIR:-$DEFAULT_INSTALL_DIR}"
 
 SCRIPT_LOCALE=""
 CFG_PORT="${DEFAULT_PORT}"
@@ -232,6 +243,14 @@ check_dependencies() {
 
 check_docker() {
     if ! command -v docker >/dev/null 2>&1; then
+        if [[ "${OS_NAME}" == "Darwin" ]]; then
+            if is_zh; then
+                fail "macOS 不支持通过本脚本自动安装 Docker。请先安装并启动 Docker Desktop、OrbStack 或 Colima，然后重新运行安装脚本。"
+            else
+                fail "Automatic Docker installation is not supported on macOS. Please install and start Docker Desktop, OrbStack, or Colima first, then rerun the installer."
+            fi
+        fi
+
         if is_zh; then
             warn "Docker 未安装，开始自动安装..."
         else
@@ -248,11 +267,35 @@ check_docker() {
                 fail "Please install curl or wget first."
             fi
         fi
-        systemctl enable docker 2>/dev/null || true
-        systemctl start docker 2>/dev/null || true
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl enable docker 2>/dev/null || true
+            systemctl start docker 2>/dev/null || true
+        fi
+    fi
+
+    if ! docker info >/dev/null 2>&1; then
+        if [[ "${OS_NAME}" == "Darwin" ]]; then
+            if is_zh; then
+                fail "检测到 Docker 命令，但 Docker 引擎未启动。请先启动 Docker Desktop、OrbStack 或 Colima。"
+            else
+                fail "Docker CLI is installed, but the Docker engine is not running. Please start Docker Desktop, OrbStack, or Colima first."
+            fi
+        fi
+        if is_zh; then
+            fail "Docker 已安装，但 Docker daemon 未启动。请先启动 Docker 服务后重试。"
+        else
+            fail "Docker is installed, but the Docker daemon is not running. Please start Docker and try again."
+        fi
     fi
 
     if ! docker compose version >/dev/null 2>&1; then
+        if [[ "${OS_NAME}" == "Darwin" ]]; then
+            if is_zh; then
+                fail "当前 Docker 环境缺少 docker compose。请升级 Docker Desktop/OrbStack，或使用 Homebrew 安装 docker-compose 后重试。"
+            else
+                fail "Your Docker environment does not provide docker compose. Upgrade Docker Desktop/OrbStack or install docker-compose with Homebrew, then retry."
+            fi
+        fi
         if is_zh; then
             warn "Docker Compose 插件未安装，开始自动安装..."
         else

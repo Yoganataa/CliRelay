@@ -170,7 +170,10 @@ cp config.example.yaml config.yaml
 
 ### 🐳 Docker 部署（推荐）
 
-**一键部署** — 在 Linux `amd64` 或 `arm64` 服务器上执行（兼容 Debian / Ubuntu / CentOS / RHEL / Fedora）：
+**一键部署**：
+
+- Linux `amd64` / `arm64`：支持自动安装 Docker
+- macOS `arm64` / `amd64`：在已安装并启动 Docker Desktop / OrbStack / Colima 的前提下可直接使用
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kittors/CliRelay/main/install.sh | bash
@@ -183,6 +186,8 @@ curl -fsSL https://raw.githubusercontent.com/kittors/CliRelay/main/install.sh | 
 - 在安装时让你选择 **中文** 或 **English**
 - 将语言选择持久化到容器环境，让内置 TUI 默认以对应语言启动
 - 安装本地 `clirelay` 管理命令，方便后续运维
+
+在 macOS 上，安装脚本**不会**替你自动安装 Docker；如果 Docker Desktop / OrbStack / Colima 没有启动，脚本会直接给出明确提示。
 
 安装完成后可以直接使用：
 

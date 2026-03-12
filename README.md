@@ -170,7 +170,10 @@ Edit `config.yaml` to add your API keys or OAuth credentials.
 
 ### 🐳 Docker (Recommended)
 
-**One-Click Deploy** — run this on Linux `amd64` or `arm64` servers (Debian / Ubuntu / CentOS / RHEL / Fedora):
+**One-Click Deploy**:
+
+- Linux `amd64` / `arm64`: supported for automatic Docker installation
+- macOS `arm64` / `amd64`: supported when Docker Desktop / OrbStack / Colima is already installed and running
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kittors/CliRelay/main/install.sh | bash
@@ -183,6 +186,8 @@ The script will:
 - let you choose **English** or **Chinese** during installation
 - persist that language into the container so the built-in TUI starts in the selected language by default
 - install a local `clirelay` helper command for day-2 operations
+
+On macOS, the installer will **not** try to install Docker for you. It will reuse your existing Docker runtime and stop with a clear message if Docker Desktop / OrbStack / Colima is not running.
 
 After installation, use:
 
