@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
@@ -249,7 +250,7 @@ func apiKeyFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
 	if !ok || ginCtx == nil {
 		return ""
 	}

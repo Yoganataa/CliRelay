@@ -41,6 +41,10 @@ type Config struct {
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
+	// OAuthClients stores optional OAuth client credentials used by provider login flows.
+	// When empty, the runtime may fall back to environment variables (see oauth_clients.go).
+	OAuthClients OAuthClients `yaml:"oauth-clients" json:"-"`
+
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
 

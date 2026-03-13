@@ -112,8 +112,5 @@ func shouldLimitRequestBody(req *http.Request) bool {
 		return false
 	}
 	contentType := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Type")))
-	if strings.HasPrefix(contentType, "multipart/form-data") {
-		return false
-	}
-	return true
+	return !strings.HasPrefix(contentType, "multipart/form-data")
 }

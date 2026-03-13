@@ -916,7 +916,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		if err := json.Unmarshal(recorder.body.Bytes(), &resp); err != nil {
 			// If parsing fails, just write the original response
 			recorder.ResponseWriter.WriteHeader(recorder.statusCode)
-			recorder.ResponseWriter.Write(recorder.body.Bytes())
+			_, _ = recorder.ResponseWriter.Write(recorder.body.Bytes())
 			return
 		}
 
@@ -941,7 +941,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		recorder.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
 		recorder.ResponseWriter.Header().Set("Content-Length", fmt.Sprintf("%d", len(filteredJSON)))
 		recorder.ResponseWriter.WriteHeader(http.StatusOK)
-		recorder.ResponseWriter.Write(filteredJSON)
+		_, _ = recorder.ResponseWriter.Write(filteredJSON)
 	}
 }
 
@@ -1030,6 +1030,16 @@ func (s *Server) Stop(ctx context.Context) error {
 //   - gin.HandlerFunc: The CORS middleware handler
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Management APIs and the embedded panel should not be callable cross-origin by default.
+		// The panel is served from the same origin, so it does not need wildcard CORS.
+		if c != nil && c.Request != nil && c.Request.URL != nil {
+			path := c.Request.URL.Path
+			if strings.HasPrefix(path, "/v0/management") || strings.HasPrefix(path, "/manage") {
+				c.Next()
+				return
+			}
+		}
+
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "*")

@@ -33,10 +33,8 @@ import (
 )
 
 const (
-	codeAssistEndpoint      = "https://cloudcode-pa.googleapis.com"
-	codeAssistVersion       = "v1internal"
-	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-	geminiOAuthClientSecret = "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"
+	codeAssistEndpoint = "https://cloudcode-pa.googleapis.com"
+	codeAssistVersion  = "v1internal"
 )
 
 var geminiOAuthScopes = []string{
@@ -605,11 +603,21 @@ func prepareGeminiCLITokenSource(ctx context.Context, cfg *config.Config, auth *
 	}
 
 	conf := &oauth2.Config{
-		ClientID:     geminiOAuthClientID,
-		ClientSecret: geminiOAuthClientSecret,
+		ClientID:     "",
+		ClientSecret: "",
 		Scopes:       geminiOAuthScopes,
 		Endpoint:     google.Endpoint,
 	}
+
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientGemini)
+	if strings.TrimSpace(clientID) == "" {
+		return nil, nil, fmt.Errorf("gemini-cli oauth client-id missing (set config oauth-clients.gemini.client-id or env %s)", config.EnvGeminiOAuthClientID)
+	}
+	conf.ClientID = clientID
+	conf.ClientSecret = clientSecret
 
 	ctxToken := ctx
 	if httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0); httpClient != nil {
@@ -740,7 +748,7 @@ func stringValue(m map[string]any, key string) string {
 // applyGeminiCLIHeaders sets required headers for the Gemini CLI upstream.
 func applyGeminiCLIHeaders(r *http.Request) {
 	var ginHeaders http.Header
-	if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+	if ginCtx, ok := r.Context().Value(util.ContextKeyGin).(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 		ginHeaders = ginCtx.Request.Header
 	}
 
@@ -898,7 +906,8 @@ func parseRetryDelay(errorBody []byte) (*time.Duration, error) {
 		if matches := re.FindStringSubmatch(message); len(matches) > 1 {
 			seconds, err := strconv.Atoi(matches[1])
 			if err == nil {
-				return new(time.Duration(seconds) * time.Second), nil
+				duration := time.Duration(seconds) * time.Second
+				return &duration, nil
 			}
 		}
 	}

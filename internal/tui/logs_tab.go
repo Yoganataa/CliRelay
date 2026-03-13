@@ -195,11 +195,9 @@ func (m logsTabModel) renderLogs() string {
 	if !m.autoScroll {
 		scrollStatus = warningStyle.Render(T("logs_paused"))
 	}
-	filterLabel := "ALL"
+	filterLabel := T("logs_filter_all")
 	if m.filter != "" {
 		filterLabel = strings.ToUpper(m.filter) + "+"
-	} else {
-		filterLabel = T("logs_filter_all")
 	}
 
 	header := fmt.Sprintf(" %s  %s  %s: %s  %s: %d",

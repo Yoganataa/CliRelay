@@ -37,6 +37,7 @@ GEMINI.md
 .claude/*
 .gemini/*
 .serena/*
+.tmp-go/*
 .agent/*
 .agents/*
 .agents/*

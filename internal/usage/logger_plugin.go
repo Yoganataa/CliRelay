@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 )
@@ -542,7 +543,7 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 
 func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {
 	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+		if ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context); ok && ginCtx != nil {
 			path := ginCtx.FullPath()
 			if path == "" && ginCtx.Request != nil {
 				path = ginCtx.Request.URL.Path
@@ -569,7 +570,7 @@ func resolveSuccess(ctx context.Context) bool {
 	if ctx == nil {
 		return true
 	}
-	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
 	if !ok || ginCtx == nil {
 		return true
 	}
