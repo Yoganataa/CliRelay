@@ -643,7 +643,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
-			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			execCtx = context.WithValue(execCtx, util.ContextKeyRoundTripper, rt)
 		}
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
@@ -699,7 +699,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
-			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			execCtx = context.WithValue(execCtx, util.ContextKeyRoundTripper, rt)
 		}
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
@@ -755,7 +755,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
-			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
+			execCtx = context.WithValue(execCtx, util.ContextKeyRoundTripper, rt)
 		}
 		execReq := req
 		execReq.Model = rewriteModelForAuth(routeModel, auth)

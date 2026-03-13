@@ -183,7 +183,7 @@ func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 }
 
 func ginContextFrom(ctx context.Context) *gin.Context {
-	ginCtx, _ := ctx.Value("gin").(*gin.Context)
+	ginCtx, _ := ctx.Value(util.ContextKeyGin).(*gin.Context)
 	return ginCtx
 }
 

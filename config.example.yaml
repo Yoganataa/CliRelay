@@ -2,6 +2,18 @@
 # Use "127.0.0.1" or "localhost" to restrict access to local machine only.
 host: ""
 
+# OAuth client credentials for provider login flows.
+# You can set these either in config.yaml or via environment variables:
+#   - Gemini:      CLIRELAY_GEMINI_OAUTH_CLIENT_ID / CLIRELAY_GEMINI_OAUTH_CLIENT_SECRET
+#   - Antigravity: CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_ID / CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_SECRET
+oauth-clients:
+  gemini:
+    client-id: ""
+    client-secret: ""
+  antigravity:
+    client-id: ""
+    client-secret: ""
+
 # Server port
 port: 8317
 

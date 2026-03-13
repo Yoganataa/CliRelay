@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -75,10 +76,10 @@ func TestResolveTokenForAuth_Antigravity_RefreshesExpiredToken(t *testing.T) {
 		if values.Get("refresh_token") != "rt" {
 			t.Fatalf("unexpected refresh_token: %s", values.Get("refresh_token"))
 		}
-		if values.Get("client_id") != antigravityOAuthClientID {
+		if values.Get("client_id") != "test-antigravity-client-id" {
 			t.Fatalf("unexpected client_id: %s", values.Get("client_id"))
 		}
-		if values.Get("client_secret") != antigravityOAuthClientSecret {
+		if values.Get("client_secret") != "test-antigravity-client-secret" {
 			t.Fatalf("unexpected client_secret")
 		}
 
@@ -116,7 +117,17 @@ func TestResolveTokenForAuth_Antigravity_RefreshesExpiredToken(t *testing.T) {
 		t.Fatalf("register auth: %v", err)
 	}
 
-	h := &Handler{authManager: manager}
+	h := &Handler{
+		cfg: &config.Config{
+			OAuthClients: config.OAuthClients{
+				Antigravity: config.OAuthClient{
+					ClientID:     "test-antigravity-client-id",
+					ClientSecret: "test-antigravity-client-secret",
+				},
+			},
+		},
+		authManager: manager,
+	}
 	token, err := h.resolveTokenForAuth(context.Background(), auth)
 	if err != nil {
 		t.Fatalf("resolveTokenForAuth: %v", err)

@@ -2,16 +2,16 @@ package management
 
 import (
 	"encoding/json"
-	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 )
 
 var statsUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: util.WebsocketOriginAllowed,
 }
 
 // SystemStatsWebSocket handles GET /v0/management/system-stats/ws

@@ -67,6 +67,9 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", port)
 	authURL := authSvc.BuildAuthURL(state, redirectURI)
+	if strings.TrimSpace(authURL) == "" {
+		return nil, fmt.Errorf("antigravity oauth client-id not configured (set config oauth-clients.antigravity.client-id or env %s)", config.EnvAntigravityOAuthClientID)
+	}
 
 	if !opts.NoBrowser {
 		fmt.Println("Opening browser for antigravity authentication")

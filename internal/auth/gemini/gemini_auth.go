@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
@@ -30,8 +32,6 @@ import (
 
 // OAuth configuration constants for Gemini
 const (
-	ClientID            = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-	ClientSecret        = "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"
 	DefaultCallbackPort = 8085
 )
 
@@ -110,10 +110,15 @@ func (g *GeminiAuth) GetAuthenticatedClient(ctx context.Context, ts *GeminiToken
 		}
 	}
 
+	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientGemini)
+	if strings.TrimSpace(clientID) == "" {
+		return nil, fmt.Errorf("missing Gemini OAuth client-id (set config oauth-clients.gemini.client-id or env %s)", config.EnvGeminiOAuthClientID)
+	}
+
 	// Configure the OAuth2 client.
 	conf := &oauth2.Config{
-		ClientID:     ClientID,
-		ClientSecret: ClientSecret,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 		RedirectURL:  callbackURL, // This will be used by the local server.
 		Scopes:       Scopes,
 		Endpoint:     google.Endpoint,
@@ -198,8 +203,7 @@ func (g *GeminiAuth) createTokenStorage(ctx context.Context, config *oauth2.Conf
 	}
 
 	ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
-	ifToken["client_id"] = ClientID
-	ifToken["client_secret"] = ClientSecret
+	ifToken["client_id"] = strings.TrimSpace(config.ClientID)
 	ifToken["scopes"] = Scopes
 	ifToken["universe_domain"] = "googleapis.com"
 
@@ -232,18 +236,35 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	}
 	callbackURL := fmt.Sprintf("http://localhost:%d/oauth2callback", callbackPort)
 
+	state, errState := misc.GenerateRandomState()
+	if errState != nil {
+		return nil, errState
+	}
+
 	// Use a channel to pass the authorization code from the HTTP handler to the main function.
 	codeChan := make(chan string, 1)
 	errChan := make(chan error, 1)
 
 	// Create a new HTTP server with its own multiplexer.
 	mux := http.NewServeMux()
-	server := &http.Server{Addr: fmt.Sprintf(":%d", callbackPort), Handler: mux}
+	server := &http.Server{
+		Addr:              fmt.Sprintf("127.0.0.1:%d", callbackPort),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	config.RedirectURL = callbackURL
 
 	mux.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("state"); got != state {
+			_, _ = fmt.Fprint(w, "Authentication failed: invalid state.")
+			select {
+			case errChan <- fmt.Errorf("invalid oauth state"):
+			default:
+			}
+			return
+		}
 		if err := r.URL.Query().Get("error"); err != "" {
-			_, _ = fmt.Fprintf(w, "Authentication failed: %s", err)
+			_, _ = fmt.Fprintf(w, "Authentication failed: %s", html.EscapeString(err))
 			select {
 			case errChan <- fmt.Errorf("authentication failed via callback: %s", err):
 			default:
@@ -267,9 +288,13 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	})
 
 	// Start the server in a goroutine.
+	listener, errListen := net.Listen("tcp", server.Addr)
+	if errListen != nil {
+		return nil, fmt.Errorf("failed to listen on %s: %w", server.Addr, errListen)
+	}
 	go func() {
-		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			log.Errorf("ListenAndServe(): %v", err)
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("Serve(): %v", err)
 			select {
 			case errChan <- err:
 			default:
@@ -278,7 +303,7 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	}()
 
 	// Open the authorization URL in the user's browser.
-	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
+	authURL := config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
 	noBrowser := false
 	if opts != nil {
@@ -364,6 +389,9 @@ waitForCallback:
 			}
 			if parsed.Code == "" {
 				return nil, fmt.Errorf("code not found in callback")
+			}
+			if parsed.State != "" && parsed.State != state {
+				return nil, fmt.Errorf("invalid oauth state")
 			}
 			authCode = parsed.Code
 			break waitForCallback

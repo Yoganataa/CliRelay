@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -85,7 +86,7 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 
 		// Preserve correlation headers for debugging
 		if req.Header.Get("X-Request-ID") == "" {
-			// Could generate one here if needed
+			req.Header.Set("X-Request-ID", uuid.NewString())
 		}
 
 		// Note: We do NOT filter Anthropic-Beta headers in the proxy path

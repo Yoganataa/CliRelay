@@ -1,0 +1,62 @@
+package config
+
+import (
+	"os"
+	"strings"
+)
+
+const (
+	OAuthClientGemini      = "gemini"
+	OAuthClientAntigravity = "antigravity"
+
+	EnvGeminiOAuthClientID     = "CLIRELAY_GEMINI_OAUTH_CLIENT_ID"
+	EnvGeminiOAuthClientSecret = "CLIRELAY_GEMINI_OAUTH_CLIENT_SECRET"
+
+	EnvAntigravityOAuthClientID     = "CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_ID"
+	EnvAntigravityOAuthClientSecret = "CLIRELAY_ANTIGRAVITY_OAUTH_CLIENT_SECRET"
+)
+
+// OAuthClients groups optional OAuth2 client credentials.
+type OAuthClients struct {
+	Gemini      OAuthClient `yaml:"gemini"`
+	Antigravity OAuthClient `yaml:"antigravity"`
+}
+
+// OAuthClient stores a single OAuth2 client credential pair.
+type OAuthClient struct {
+	ClientID     string `yaml:"client-id"`
+	ClientSecret string `yaml:"client-secret"`
+}
+
+func (cfg *Config) OAuthClientCredentials(kind string) (clientID, clientSecret string) {
+	if cfg != nil {
+		switch strings.ToLower(strings.TrimSpace(kind)) {
+		case OAuthClientGemini:
+			clientID = strings.TrimSpace(cfg.OAuthClients.Gemini.ClientID)
+			clientSecret = strings.TrimSpace(cfg.OAuthClients.Gemini.ClientSecret)
+		case OAuthClientAntigravity:
+			clientID = strings.TrimSpace(cfg.OAuthClients.Antigravity.ClientID)
+			clientSecret = strings.TrimSpace(cfg.OAuthClients.Antigravity.ClientSecret)
+		}
+	}
+
+	// Env fallback (allows running without storing credentials in config.yaml).
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case OAuthClientGemini:
+		if clientID == "" {
+			clientID = strings.TrimSpace(os.Getenv(EnvGeminiOAuthClientID))
+		}
+		if clientSecret == "" {
+			clientSecret = strings.TrimSpace(os.Getenv(EnvGeminiOAuthClientSecret))
+		}
+	case OAuthClientAntigravity:
+		if clientID == "" {
+			clientID = strings.TrimSpace(os.Getenv(EnvAntigravityOAuthClientID))
+		}
+		if clientSecret == "" {
+			clientSecret = strings.TrimSpace(os.Getenv(EnvAntigravityOAuthClientSecret))
+		}
+	}
+
+	return clientID, clientSecret
+}

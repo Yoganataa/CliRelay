@@ -7,7 +7,7 @@ RUN bun install --frozen-lockfile
 RUN bunx vite build
 
 # ── Backend build ────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.1-alpine AS backend-builder
 
 WORKDIR /app
 

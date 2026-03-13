@@ -66,7 +66,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		// Finalize logging after request processing
 		if err = wrapper.Finalize(c); err != nil {
 			// Log error but don't interrupt the response
-			// In a real implementation, you might want to use a proper logger here
+			_ = c.Error(err)
 		}
 	}
 }

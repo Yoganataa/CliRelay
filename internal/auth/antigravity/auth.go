@@ -32,18 +32,23 @@ type userInfo struct {
 // AntigravityAuth handles Antigravity OAuth authentication
 type AntigravityAuth struct {
 	httpClient *http.Client
+	clientID   string
+	secret     string
 }
 
 // NewAntigravityAuth creates a new Antigravity auth service.
 func NewAntigravityAuth(cfg *config.Config, httpClient *http.Client) *AntigravityAuth {
-	if httpClient != nil {
-		return &AntigravityAuth{httpClient: httpClient}
-	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientAntigravity)
+	if httpClient != nil {
+		return &AntigravityAuth{httpClient: httpClient, clientID: clientID, secret: clientSecret}
+	}
 	return &AntigravityAuth{
 		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
+		clientID:   clientID,
+		secret:     clientSecret,
 	}
 }
 
@@ -52,9 +57,13 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string) string {
 	if strings.TrimSpace(redirectURI) == "" {
 		redirectURI = fmt.Sprintf("http://localhost:%d/oauth-callback", CallbackPort)
 	}
+	clientID := strings.TrimSpace(o.clientID)
+	if clientID == "" {
+		return ""
+	}
 	params := url.Values{}
 	params.Set("access_type", "offline")
-	params.Set("client_id", ClientID)
+	params.Set("client_id", clientID)
 	params.Set("prompt", "consent")
 	params.Set("redirect_uri", redirectURI)
 	params.Set("response_type", "code")
@@ -65,10 +74,14 @@ func (o *AntigravityAuth) BuildAuthURL(state, redirectURI string) string {
 
 // ExchangeCodeForTokens exchanges authorization code for access and refresh tokens
 func (o *AntigravityAuth) ExchangeCodeForTokens(ctx context.Context, code, redirectURI string) (*TokenResponse, error) {
+	clientID := strings.TrimSpace(o.clientID)
+	if clientID == "" {
+		return nil, fmt.Errorf("antigravity token exchange: missing oauth client-id (set config oauth-clients.antigravity.client-id or env %s)", config.EnvAntigravityOAuthClientID)
+	}
 	data := url.Values{}
 	data.Set("code", code)
-	data.Set("client_id", ClientID)
-	data.Set("client_secret", ClientSecret)
+	data.Set("client_id", clientID)
+	data.Set("client_secret", strings.TrimSpace(o.secret))
 	data.Set("redirect_uri", redirectURI)
 	data.Set("grant_type", "authorization_code")
 

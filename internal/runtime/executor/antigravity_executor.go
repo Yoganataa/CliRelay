@@ -43,8 +43,6 @@ const (
 	antigravityStreamPath          = "/v1internal:streamGenerateContent"
 	antigravityGeneratePath        = "/v1internal:generateContent"
 	antigravityModelsPath          = "/v1internal:fetchAvailableModels"
-	antigravityClientID            = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	antigravityClientSecret        = "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"
 	defaultAntigravityAgent        = "antigravity/1.104.0 darwin/arm64"
 	antigravityAuthType            = "antigravity"
 	refreshSkew                    = 3000 * time.Second
@@ -1210,8 +1208,8 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 	}
 	refreshCtx := context.Background()
 	if ctx != nil {
-		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-			refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
+		if rt, ok := ctx.Value(util.ContextKeyRoundTripper).(http.RoundTripper); ok && rt != nil {
+			refreshCtx = context.WithValue(refreshCtx, util.ContextKeyRoundTripper, rt)
 		}
 	}
 	updated, errRefresh := e.refreshToken(refreshCtx, auth.Clone())
@@ -1231,8 +1229,16 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 	}
 
 	form := url.Values{}
-	form.Set("client_id", antigravityClientID)
-	form.Set("client_secret", antigravityClientSecret)
+	cfg := e.cfg
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	clientID, clientSecret := cfg.OAuthClientCredentials(config.OAuthClientAntigravity)
+	if strings.TrimSpace(clientID) == "" {
+		return auth, statusErr{code: http.StatusUnauthorized, msg: "missing antigravity oauth client-id"}
+	}
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 

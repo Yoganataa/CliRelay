@@ -17,7 +17,7 @@ func TestMaskKey(t *testing.T) {
 	}{
 		{"", ""},
 		{"short", "****"},
-		{"sk-user1234567890abcd", "sk-use****abcd"},
+		{"sk-useXXXX1234567890abcd", "sk-use****abcd"},
 	}
 	for _, tc := range tests {
 		if got := maskKey(tc.input); got != tc.expected {
@@ -33,7 +33,7 @@ func TestMaskName(t *testing.T) {
 		{"", ""},
 		{"A", "***"},
 		{"管理员", "管***"},
-		{"周肖杰", "周***"},
+		{"测试账号", "测***"},
 		{"Alice", "A***"},
 	}
 	for _, tc := range tests {
@@ -64,10 +64,10 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 	cfg := &config.Config{
 		SDKConfig: config.SDKConfig{
 			ProxyURL: "http://proxy.example.com:8080/path",
-			APIKeys:  []string{"sk-user1234567890abcd"},
+			APIKeys:  []string{"sk-useXXXX1234567890abcd"},
 			APIKeyEntries: []config.APIKeyEntry{
-				{Key: "sk-user1234567890abcd", Name: "管理员"},
-				{Key: "sk-gauXXXXb41v00000000", Name: "周肖杰"},
+				{Key: "sk-useXXXX1234567890abcd", Name: "管理员"},
+				{Key: "sk-gauXXXXb41v00000000", Name: "测试账号"},
 			},
 		},
 		Redis: config.RedisConfig{
@@ -137,17 +137,17 @@ func TestSanitizeConfigForAPI(t *testing.T) {
 
 	// ── Verify API keys are masked ──
 	for _, k := range sanitized.APIKeys {
-		if k == "sk-user1234567890abcd" {
+		if k == "sk-useXXXX1234567890abcd" {
 			t.Error("APIKeys: raw key not masked")
 		}
 	}
 
 	// ── Verify API key entry names are masked ──
 	for _, e := range sanitized.APIKeyEntries {
-		if e.Name == "管理员" || e.Name == "周肖杰" {
+		if e.Name == "管理员" || e.Name == "测试账号" {
 			t.Errorf("APIKeyEntries: name %q not masked", e.Name)
 		}
-		if e.Key == "sk-user1234567890abcd" || e.Key == "sk-gauXXXXb41v00000000" {
+		if e.Key == "sk-useXXXX1234567890abcd" || e.Key == "sk-gauXXXXb41v00000000" {
 			t.Errorf("APIKeyEntries: key %q not masked", e.Key)
 		}
 	}

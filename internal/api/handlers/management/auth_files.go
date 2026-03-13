@@ -28,6 +28,7 @@ import (
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -1115,17 +1116,27 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 
 	fmt.Println("Initializing Google authentication...")
 
-	// OAuth2 configuration using exported constants from internal/auth/gemini
+	clientID, clientSecret := h.cfg.OAuthClientCredentials(config.OAuthClientGemini)
+	if strings.TrimSpace(clientID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "gemini oauth client-id not configured"})
+		return
+	}
+
+	// OAuth2 configuration
 	conf := &oauth2.Config{
-		ClientID:     geminiAuth.ClientID,
-		ClientSecret: geminiAuth.ClientSecret,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 		RedirectURL:  fmt.Sprintf("http://localhost:%d/oauth2callback", geminiAuth.DefaultCallbackPort),
 		Scopes:       geminiAuth.Scopes,
 		Endpoint:     google.Endpoint,
 	}
 
 	// Build authorization URL and return it immediately
-	state := fmt.Sprintf("gem-%d", time.Now().UnixNano())
+	state, errState := misc.GenerateRandomState()
+	if errState != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate state parameter"})
+		return
+	}
 	authURL := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
 	RegisterOAuthSession(state, "gemini")
@@ -1243,8 +1254,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 		}
 
 		ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
-		ifToken["client_id"] = geminiAuth.ClientID
-		ifToken["client_secret"] = geminiAuth.ClientSecret
+		ifToken["client_id"] = strings.TrimSpace(conf.ClientID)
 		ifToken["scopes"] = geminiAuth.Scopes
 		ifToken["universe_domain"] = "googleapis.com"
 
@@ -1524,6 +1534,10 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
 	authURL := authSvc.BuildAuthURL(state, redirectURI)
+	if strings.TrimSpace(authURL) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "antigravity oauth client-id not configured"})
+		return
+	}
 
 	RegisterOAuthSession(state, "antigravity")
 
