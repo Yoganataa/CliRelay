@@ -46,9 +46,10 @@ var (
 
 	requestLogMaintenanceCancel context.CancelFunc
 	requestLogMaintenanceWG     sync.WaitGroup
-	requestLogMaintenanceWakeup chan struct{}
+	requestLogMaintenanceWakeup atomic.Value // chan struct{}
 
 	lastUsageVacuumUnixNano atomic.Int64
+	requestLogContentBytes  atomic.Int64 // total compressed bytes; -1 means unknown
 
 	zstdEncoderPool = sync.Pool{
 		New: func() any {
@@ -69,6 +70,12 @@ var (
 		},
 	}
 )
+
+func init() {
+	requestLogContentBytes.Store(-1)
+	// Initialize atomic.Value type so subsequent stores can use typed nil safely.
+	requestLogMaintenanceWakeup.Store((chan struct{})(nil))
+}
 
 func contentRetentionUnlimited() bool {
 	return requestLogStorage.ContentRetentionDays <= 0
@@ -111,8 +118,17 @@ func maxLogContentBytes() int64 {
 	return int64(requestLogStorage.MaxTotalSizeMB) * 1024 * 1024
 }
 
+func requestLogMaintenanceWakeupChan() chan struct{} {
+	value := requestLogMaintenanceWakeup.Load()
+	if value == nil {
+		return nil
+	}
+	ch, _ := value.(chan struct{})
+	return ch
+}
+
 func triggerRequestLogCompaction() {
-	ch := requestLogMaintenanceWakeup
+	ch := requestLogMaintenanceWakeupChan()
 	if ch == nil {
 		return
 	}
@@ -129,8 +145,8 @@ func startRequestLogMaintenance(db *sql.DB) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	requestLogMaintenanceCancel = cancel
-	requestLogMaintenanceWakeup = make(chan struct{}, 1)
-	wakeup := requestLogMaintenanceWakeup
+	wakeup := make(chan struct{}, 1)
+	requestLogMaintenanceWakeup.Store(wakeup)
 	requestLogMaintenanceWG.Add(1)
 	go func() {
 		defer requestLogMaintenanceWG.Done()
@@ -161,12 +177,20 @@ func stopRequestLogMaintenance() {
 		requestLogMaintenanceWG.Wait()
 		requestLogMaintenanceCancel = nil
 	}
-	requestLogMaintenanceWakeup = nil
+	requestLogMaintenanceWakeup.Store((chan struct{})(nil))
 }
 
 func runRequestLogMaintenancePass(db *sql.DB) {
 	if db == nil {
 		return
+	}
+
+	// Refresh the running total periodically so size-cap enforcement stays fast
+	// and accurate without per-request full table scans.
+	if requestLogContentBytes.Load() < 0 {
+		if total, err := queryStoredContentBytes(db); err == nil {
+			requestLogContentBytes.Store(total)
+		}
 	}
 
 	for {
@@ -196,6 +220,14 @@ func runRequestLogMaintenancePass(db *sql.DB) {
 	}
 	if trimmed > 0 {
 		log.Infof("usage: pruned %d request log content rows to enforce size cap", trimmed)
+	}
+
+	// After maintenance changes, refresh the exact total once to keep the running
+	// counter accurate (avoids drift from pruning/migration deletes).
+	if total, err := queryStoredContentBytes(db); err == nil {
+		requestLogContentBytes.Store(total)
+	} else {
+		requestLogContentBytes.Store(-1)
 	}
 
 	// Always run checkpoint + conditional vacuum. This ensures:
@@ -243,11 +275,36 @@ func insertLogContentTx(tx *sql.Tx, logID int64, timestamp time.Time, inputConte
 		return fmt.Errorf("usage: insert compressed content: %w", err)
 	}
 	if maxBytes > 0 {
-		deleted, errCleanup := cleanupOversizedLogContentQuerier(tx, maxBytes)
-		if errCleanup != nil {
-			return fmt.Errorf("usage: enforce content size cap: %w", err)
+		total := requestLogContentBytes.Load()
+		if total >= 0 {
+			// Fast path: keep a running total without scanning the whole table.
+			total = requestLogContentBytes.Add(rowBytes)
+		} else {
+			// Bootstrap the running total once (may scan), then keep it updated incrementally.
+			if initTotal, errInit := queryStoredContentBytes(tx); errInit == nil {
+				requestLogContentBytes.Store(initTotal)
+				total = initTotal
+			} else {
+				// Fallback to scan-based enforcement when we can't initialize the counter.
+				deletedRows, errCleanup := cleanupOversizedLogContentQuerier(tx, maxBytes)
+				if errCleanup != nil {
+					return fmt.Errorf("usage: enforce content size cap: %w", errCleanup)
+				}
+				if deletedRows > 0 {
+					requestLogContentBytes.Store(-1)
+					triggerRequestLogCompaction()
+				}
+				return nil
+			}
 		}
-		if deleted > 0 {
+
+		// Enforce cap without per-request full table SUM() scans.
+		trimmedBytes, errTrim := cleanupOversizedLogContentQuerierWithTotal(tx, total, maxBytes)
+		if errTrim != nil {
+			return fmt.Errorf("usage: enforce content size cap: %w", errTrim)
+		}
+		if trimmedBytes > 0 {
+			requestLogContentBytes.Add(-trimmedBytes)
 			triggerRequestLogCompaction()
 		}
 	}
@@ -424,12 +481,30 @@ func cleanupOversizedLogContentQuerier(q logContentQuerier, maxBytes int64) (int
 		return 0, err
 	}
 
+	_, deletedRows, err := cleanupOversizedLogContentQuerierWithTotalInternal(q, totalBytes, maxBytes)
+	return deletedRows, err
+}
+
+func cleanupOversizedLogContentQuerierWithTotal(q logContentQuerier, totalBytes int64, maxBytes int64) (int64, error) {
+	if q == nil || maxBytes <= 0 || totalBytes <= maxBytes {
+		return 0, nil
+	}
+	trimmedBytes, _, err := cleanupOversizedLogContentQuerierWithTotalInternal(q, totalBytes, maxBytes)
+	return trimmedBytes, err
+}
+
+func cleanupOversizedLogContentQuerierWithTotalInternal(q logContentQuerier, totalBytes int64, maxBytes int64) (int64, int64, error) {
+	if q == nil || maxBytes <= 0 || totalBytes <= maxBytes {
+		return 0, 0, nil
+	}
+
 	var deletedRows int64
+	var deletedBytes int64
 	for totalBytes > maxBytes {
 		required := totalBytes - maxBytes
 		ids, reclaimed, err := oldestContentRowsForTrim(q, required, 200)
 		if err != nil {
-			return deletedRows, err
+			return deletedBytes, deletedRows, err
 		}
 		if len(ids) == 0 || reclaimed <= 0 {
 			break
@@ -437,16 +512,17 @@ func cleanupOversizedLogContentQuerier(q logContentQuerier, maxBytes int64) (int
 		query, args := buildDeleteContentRowsQuery(ids)
 		result, err := q.Exec(query, args...)
 		if err != nil {
-			return deletedRows, fmt.Errorf("usage: delete oversized content rows: %w", err)
+			return deletedBytes, deletedRows, fmt.Errorf("usage: delete oversized content rows: %w", err)
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
-			return deletedRows, fmt.Errorf("usage: affected rows for oversized content cleanup: %w", err)
+			return deletedBytes, deletedRows, fmt.Errorf("usage: affected rows for oversized content cleanup: %w", err)
 		}
 		deletedRows += affected
+		deletedBytes += reclaimed
 		totalBytes -= reclaimed
 	}
-	return deletedRows, nil
+	return deletedBytes, deletedRows, nil
 }
 
 func queryStoredContentBytes(q logContentQuerier) (int64, error) {
