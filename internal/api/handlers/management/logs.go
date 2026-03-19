@@ -18,6 +18,7 @@ import (
 
 const (
 	defaultLogFileName      = "main.log"
+	defaultLogLimit         = 5000
 	logScannerInitialBuffer = 64 * 1024
 	logScannerMaxBuffer     = 8 * 1024 * 1024
 )
@@ -490,7 +491,7 @@ func parseCutoff(raw string) int64 {
 func parseLimit(raw string) (int, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return 0, nil
+		return defaultLogLimit, nil
 	}
 	limit, err := strconv.Atoi(value)
 	if err != nil {
