@@ -16,12 +16,21 @@ jobs:
           go-version: '1.26.1'
 
       - name: Build linux/amd64 binary
+        env:
+          BUILD_TIME: ${{ github.event.head_commit.timestamp }}
         run: |
+          # Use commit timestamp if available, otherwise current time
+          if [ -n "$BUILD_TIME" ]; then
+            BUILD_DATE="$BUILD_TIME"
+          else
+            BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          fi
+          echo "Build date: $BUILD_DATE"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w \
               -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Version=${{ github.ref_name }}' \
               -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Commit=${{ github.sha }}' \
-              -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
+              -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.BuildDate=${BUILD_DATE}'" \
             -o cli-proxy-api-new ./cmd/server/
 
       - name: Upload binary (as temp name)
