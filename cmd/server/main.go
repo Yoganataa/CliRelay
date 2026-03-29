@@ -35,9 +35,6 @@ import (
 )
 
 var (
-	Version           = "dev"
-	Commit            = "none"
-	BuildDate         = "unknown"
 	DefaultConfigPath = ""
 )
 
@@ -63,9 +60,6 @@ type cliModeOptions struct {
 // init initializes the shared logger setup.
 func init() {
 	logging.SetupBaseLogger()
-	buildinfo.Version = Version
-	buildinfo.Commit = Commit
-	buildinfo.BuildDate = BuildDate
 }
 
 // main is the entry point of the application.

@@ -3,6 +3,8 @@ FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder
 
 WORKDIR /frontend
 COPY frontend/ .
+ARG UI_VERSION=dev
+ENV VITE_APP_VERSION=${UI_VERSION}
 RUN bun install --frozen-lockfile
 RUN bunx vite build
 

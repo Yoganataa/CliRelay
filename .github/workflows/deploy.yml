@@ -21,14 +21,18 @@ jobs:
         run: |
           # Use commit timestamp if available, otherwise current time
           if [ -n "$BUILD_TIME" ]; then
-            BUILD_DATE="$BUILD_TIME"
+            # Normalise to UTC ISO8601 when possible (runner uses GNU date)
+            BUILD_DATE="$(date -u -d "$BUILD_TIME" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$BUILD_TIME")"
           else
             BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           fi
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          VERSION="${{ github.ref_name }}-${SHORT_SHA}"
           echo "Build date: $BUILD_DATE"
+          echo "Version: $VERSION"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w \
-              -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Version=${{ github.ref_name }}' \
+              -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Version=${VERSION}' \
               -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.Commit=${{ github.sha }}' \
               -X 'github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo.BuildDate=${BUILD_DATE}'" \
             -o cli-proxy-api-new ./cmd/server/
