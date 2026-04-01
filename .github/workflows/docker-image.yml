@@ -15,12 +15,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Checkout frontend
-        uses: actions/checkout@v4
-        with:
-          repository: kittors/codeProxy
-          path: frontend
-          ref: main
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to DockerHub
@@ -33,7 +27,7 @@ jobs:
           VERSION="$(git describe --tags --always --dirty)"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          FRONTEND_COMMIT="$(git -C frontend rev-parse --short HEAD)"
+          FRONTEND_COMMIT="$(git ls-remote https://github.com/kittors/codeProxy.git refs/heads/main | awk '{print substr($1,1,7)}')"
           UI_VERSION="panel-${VERSION}-${FRONTEND_COMMIT}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "COMMIT=${COMMIT}" >> "$GITHUB_ENV"
@@ -59,12 +53,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Checkout frontend
-        uses: actions/checkout@v4
-        with:
-          repository: kittors/codeProxy
-          path: frontend
-          ref: main
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to DockerHub
@@ -77,7 +65,7 @@ jobs:
           VERSION="$(git describe --tags --always --dirty)"
           COMMIT="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          FRONTEND_COMMIT="$(git -C frontend rev-parse --short HEAD)"
+          FRONTEND_COMMIT="$(git ls-remote https://github.com/kittors/codeProxy.git refs/heads/main | awk '{print substr($1,1,7)}')"
           UI_VERSION="panel-${VERSION}-${FRONTEND_COMMIT}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "COMMIT=${COMMIT}" >> "$GITHUB_ENV"

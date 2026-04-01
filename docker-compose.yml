@@ -1,7 +1,7 @@
 services:
   cli-proxy-api:
-    image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
-    pull_policy: always
+    image: ${CLI_PROXY_IMAGE:-clirelay-local:dev}
+    pull_policy: ${CLI_PROXY_PULL_POLICY:-never}
     build:
       context: .
       dockerfile: Dockerfile
@@ -9,6 +9,9 @@ services:
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-none}
         BUILD_DATE: ${BUILD_DATE:-unknown}
+        UI_VERSION: ${UI_VERSION:-dev}
+        FRONTEND_REPOSITORY: ${FRONTEND_REPOSITORY:-https://github.com/kittors/codeProxy.git}
+        FRONTEND_REF: ${FRONTEND_REF:-main}
     container_name: cli-proxy-api
     # env_file:
     #   - .env

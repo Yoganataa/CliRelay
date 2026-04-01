@@ -240,7 +240,15 @@ Or deploy manually with Docker Compose:
 docker compose up -d
 ```
 
-The included `docker-compose.yml` uses the published image by default. For manual Docker deployments, you can also set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
+The included `docker-compose.yml` now builds from the current `CliRelay` checkout by default and fetches the latest `kittors/codeProxy` frontend during the Docker build, so a fresh clone no longer depends on whatever `ghcr.io/kittors/clirelay:latest` happened to contain.
+
+If you explicitly want the published image instead of a local build:
+
+```bash
+CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:latest CLI_PROXY_PULL_POLICY=always docker compose up -d
+```
+
+For manual Docker deployments, you can also set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
 
 ### 🗄️ Enabling Data Persistence
 
@@ -275,8 +283,10 @@ When the control panel is enabled, open:
 http://localhost:8317/manage
 ```
 
+- `remote-management.disable-control-panel` now defaults to `true` in the example config and installer-generated config, so the panel stays closed unless you intentionally enable it.
+- When enabled, the current panel route is `/manage/login`. The old `management.html#/login` route is legacy-only.
 - Official Docker installs and the published image expose the panel at `/manage`.
-- The server can serve a bundled SPA directory or auto-fetch a legacy `management.html` asset when needed.
+- The server can serve a bundled SPA directory or auto-fetch panel assets when needed.
 - This repository contains the hosting/update path for `/manage`; the standalone web panel source is maintained separately from the Go server code.
 - Terminal-first management is also available through `clirelay tui` or `./cli-proxy-api -tui`.
 - If you want to customize the panel asset source, set `remote-management.panel-github-repository`.

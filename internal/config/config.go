@@ -607,6 +607,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
+	cfg.RemoteManagement.DisableControlPanel = true
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
@@ -1188,7 +1189,10 @@ func mergeMappingPreserve(dst, src *yaml.Node, path ...[]string) {
 			// New key: only add if value is non-zero and not a known default
 			candidate := deepCopyNode(sv)
 			pruneKnownDefaultsInNewNode(childPath, candidate)
-			if isKnownDefaultValue(childPath, candidate) {
+			if (candidate.Kind == yaml.MappingNode || candidate.Kind == yaml.SequenceNode) && len(candidate.Content) == 0 {
+				continue
+			}
+			if candidate.Kind != yaml.MappingNode && candidate.Kind != yaml.SequenceNode && isKnownDefaultValue(childPath, candidate) {
 				continue
 			}
 			dst.Content = append(dst.Content, deepCopyNode(sk), candidate)
@@ -1293,18 +1297,27 @@ func appendPath(path []string, key string) []string {
 // represents a known default value that should not be written to the config file.
 // This prevents non-zero defaults from polluting the config.
 func isKnownDefaultValue(path []string, node *yaml.Node) bool {
-	// First check if it's a zero value
+	if len(path) == 0 {
+		return isZeroValueNode(node)
+	}
+
+	fullPath := strings.Join(path, ".")
+
+	// Check bool defaults before the generic zero-value fallback. Some keys now
+	// intentionally default to true, so writing false must be preserved.
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+		switch fullPath {
+		case "remote-management.disable-control-panel":
+			return node.Value == "true"
+		}
+	}
+
+	// Zero values remain defaults for all other paths.
 	if isZeroValueNode(node) {
 		return true
 	}
 
 	// Match known non-zero defaults by exact dotted path.
-	if len(path) == 0 {
-		return false
-	}
-
-	fullPath := strings.Join(path, ".")
-
 	// Check string defaults
 	if node.Kind == yaml.ScalarNode && node.Tag == "!!str" {
 		switch fullPath {

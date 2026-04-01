@@ -46,7 +46,8 @@ remote-management:
   secret-key: ""
 
   # Disable the bundled management control panel asset download and HTTP route when true.
-  disable-control-panel: false
+  # Default is true so fresh deployments do not accidentally expose a stale panel.
+  disable-control-panel: true
 
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
   panel-github-repository: "https://github.com/kittors/codeProxy"

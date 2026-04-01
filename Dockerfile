@@ -1,8 +1,23 @@
+# ── Frontend source ──────────────────────────────────────────────────────────
+FROM --platform=$BUILDPLATFORM alpine:3.22.0 AS frontend-source
+
+ARG FRONTEND_REPOSITORY=https://github.com/kittors/codeProxy.git
+ARG FRONTEND_REF=main
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /src
+
+# Local `docker compose up -d` from the CliRelay repo should always build the
+# current management panel instead of depending on a separately checked out
+# `frontend/` directory or an outdated published image.
+RUN git clone --depth=1 --branch "${FRONTEND_REF}" "${FRONTEND_REPOSITORY}" frontend
+
 # ── Frontend build ───────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM oven/bun:1 AS frontend-builder
 
 WORKDIR /frontend
-COPY frontend/ .
+COPY --from=frontend-source /src/frontend/ .
 ARG UI_VERSION=dev
 ENV VITE_APP_VERSION=${UI_VERSION}
 RUN bun install --frozen-lockfile

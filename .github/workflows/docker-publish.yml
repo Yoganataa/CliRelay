@@ -3,6 +3,8 @@ name: Build & Push Docker Image
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 env:
@@ -20,20 +22,14 @@ jobs:
       - name: Checkout backend
         uses: actions/checkout@v4
 
-      - name: Checkout frontend
-        uses: actions/checkout@v4
-        with:
-          repository: kittors/codeProxy
-          path: frontend
-          ref: main
-
       - name: Compute build metadata
         id: build_meta
         run: |
           set -euo pipefail
+          REF_NAME="${GITHUB_REF_NAME:-main}"
           BACKEND_SHORT="$(git rev-parse --short HEAD)"
-          FRONTEND_SHORT="$(git -C frontend rev-parse --short HEAD)"
-          echo "VERSION=${{ github.ref_name }}-${BACKEND_SHORT}" >> "$GITHUB_ENV"
+          FRONTEND_SHORT="$(git ls-remote https://github.com/kittors/codeProxy.git refs/heads/main | awk '{print substr($1,1,7)}')"
+          echo "VERSION=${REF_NAME}-${BACKEND_SHORT}" >> "$GITHUB_ENV"
           echo "UI_VERSION=panel-main-${FRONTEND_SHORT}" >> "$GITHUB_ENV"
           echo "backend_short=${BACKEND_SHORT}" >> "$GITHUB_OUTPUT"
           echo "frontend_short=${FRONTEND_SHORT}" >> "$GITHUB_OUTPUT"

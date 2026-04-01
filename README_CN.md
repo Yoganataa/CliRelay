@@ -240,7 +240,15 @@ clirelay tui
 docker compose up -d
 ```
 
-仓库内的 `docker-compose.yml` 默认直接使用已发布镜像。如果你是手动使用 Docker Compose 部署，也可以在环境变量中设置 `CLIRELAY_LOCALE=en` 或 `CLIRELAY_LOCALE=zh`，控制 TUI 的默认语言。
+仓库内的 `docker-compose.yml` 现在默认会基于当前 `CliRelay` 源码本地构建，并在 Docker 构建阶段自动拉取最新 `kittors/codeProxy` 前端，所以用户 fresh clone 后不再依赖 `ghcr.io/kittors/clirelay:latest` 里碰巧是什么版本。
+
+如果你明确想使用已发布镜像而不是本地构建：
+
+```bash
+CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:latest CLI_PROXY_PULL_POLICY=always docker compose up -d
+```
+
+如果你是手动使用 Docker Compose 部署，也可以在环境变量中设置 `CLIRELAY_LOCALE=en` 或 `CLIRELAY_LOCALE=zh`，控制 TUI 的默认语言。
 
 ### 🗄️ 开启数据持久化
 
@@ -275,8 +283,10 @@ requires_openai_auth = true
 http://localhost:8317/manage
 ```
 
+- `remote-management.disable-control-panel` 现在在示例配置和安装脚本生成的配置里默认都是 `true`，只有显式开启后才会暴露面板。
+- 开启后当前正式路由是 `/manage/login`，`management.html#/login` 仅保留给旧版兼容链路。
 - 官方 Docker 安装和已发布镜像都会在 `/manage` 暴露控制面板。
-- 服务端既支持托管打包后的 SPA 目录，也支持在需要时自动拉取兼容的 `management.html` 单文件面板。
+- 服务端既支持托管打包后的 SPA 目录，也支持在需要时自动拉取面板资源。
 - 当前仓库只包含 `/manage` 的托管和同步链路，独立 Web 面板源码与 Go 服务端代码分仓维护。
 - 如果你偏向终端运维，也可以使用 `clirelay tui` 或 `./cli-proxy-api -tui`。
 - 如果你希望自定义面板资源来源，可设置 `remote-management.panel-github-repository`。
