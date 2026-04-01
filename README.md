@@ -240,12 +240,12 @@ Or deploy manually with Docker Compose:
 docker compose up -d
 ```
 
-The included `docker-compose.yml` now builds from the current `CliRelay` checkout by default and fetches the latest `kittors/codeProxy` frontend during the Docker build, so a fresh clone no longer depends on whatever `ghcr.io/kittors/clirelay:latest` happened to contain.
+The included `docker-compose.yml` uses the published `ghcr.io/kittors/clirelay:latest` image by default, so a fresh clone follows the normal production deployment path and does not compile Go on the target machine.
 
-If you explicitly want the published image instead of a local build:
+The bundled `build:` section is kept as a local fallback for source-level verification or emergency rebuilds. If you explicitly want to force a local build from the checked out source instead of pulling GHCR:
 
 ```bash
-CLI_PROXY_IMAGE=ghcr.io/kittors/clirelay:latest CLI_PROXY_PULL_POLICY=always docker compose up -d
+CLI_PROXY_IMAGE=clirelay-local:dev CLI_PROXY_PULL_POLICY=never docker compose up -d
 ```
 
 For manual Docker deployments, you can also set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
