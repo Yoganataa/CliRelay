@@ -45,7 +45,7 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "cli-proxy-api-new"
-          target: "/root/cliproxy/"
+          target: "/opt/clirelay2/"
           overwrite: true
 
       - name: Stop, swap, and restart
@@ -56,12 +56,12 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /root/cliproxy
+            cd /opt/clirelay2
             # Stop via systemd
-            systemctl stop cliproxy 2>/dev/null || true
+            systemctl stop clirelay2 2>/dev/null || true
             sleep 1
-            # Kill any stray processes (use pgrep for exact match, avoid killing ourselves)
-            PIDS=$(pgrep -x cli-proxy-api 2>/dev/null) || true
+            # Kill any stray processes
+            PIDS=$(pgrep -f "^/opt/clirelay2/clirelay2" 2>/dev/null) || true
             if [ -n "$PIDS" ]; then
               kill $PIDS 2>/dev/null || true
               sleep 2
@@ -76,6 +76,6 @@ jobs:
             # Clean up old backups, keep last 3
             ls -1t cli-proxy-api.bak.* 2>/dev/null | tail -n +4 | xargs -r rm -f
             # Start service
-            systemctl start cliproxy
+            systemctl start clirelay2
             sleep 3
-            systemctl is-active cliproxy
+            systemctl is-active clirelay2
