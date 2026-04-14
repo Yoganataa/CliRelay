@@ -7,18 +7,23 @@ package gemini
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+)
+
+const (
+	geminiCLIBridgeResponseLimit = 64 << 20
+	geminiCLIBridgeErrorLimit    = 2 << 20
 )
 
 // GeminiCLIAPIHandler contains the handlers for Gemini CLI API endpoints.
@@ -103,7 +108,14 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 					log.Printf("warn: failed to close response body: %v", err)
 				}
 			}()
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, geminiCLIBridgeErrorLimit)
+			if errReadBody != nil {
+				if bodyutil.IsTooLarge(errReadBody) {
+					bodyBytes = []byte("upstream error body too large")
+				} else {
+					bodyBytes = []byte(fmt.Sprintf("failed to read upstream error body: %v", errReadBody))
+				}
+			}
 
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 				Error: handlers.ErrorDetail{
@@ -121,8 +133,17 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 		for key, value := range resp.Header {
 			c.Header(key, value[0])
 		}
-		output, err := io.ReadAll(resp.Body)
+		output, err := bodyutil.ReadAll(resp.Body, geminiCLIBridgeResponseLimit)
 		if err != nil {
+			if bodyutil.IsTooLarge(err) {
+				c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
+					Error: handlers.ErrorDetail{
+						Message: "Upstream response body too large",
+						Type:    "server_error",
+					},
+				})
+				return
+			}
 			log.Errorf("Failed to read response body: %v", err)
 			return
 		}
