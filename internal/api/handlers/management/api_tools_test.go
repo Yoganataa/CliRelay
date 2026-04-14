@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -180,5 +182,36 @@ func TestResolveTokenForAuth_Antigravity_SkipsRefreshWhenTokenValid(t *testing.T
 	}
 	if callCount != 0 {
 		t.Fatalf("expected no refresh calls, got %d", callCount)
+	}
+}
+
+func TestAPICallRejectsOversizedUpstreamResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(bytes.Repeat([]byte("a"), int(managementAPICallResponseLimit)+1))
+	}))
+	t.Cleanup(upstream.Close)
+
+	h := &Handler{cfg: &config.Config{}}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"method":"GET","url":"` + upstream.URL + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.APICall(c)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadGateway, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream response too large") {
+		t.Fatalf("expected upstream size error, got body=%s", rec.Body.String())
 	}
 }

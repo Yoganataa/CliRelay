@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -23,6 +24,10 @@ import (
 )
 
 const defaultAPICallTimeout = 60 * time.Second
+const (
+	managementAPICallResponseLimit    int64 = 4 << 20
+	managementOAuthTokenResponseLimit int64 = 64 << 10
+)
 
 var geminiOAuthScopes = []string{
 	"https://www.googleapis.com/auth/cloud-platform",
@@ -193,8 +198,12 @@ func (h *Handler) APICall(c *gin.Context) {
 		}
 	}()
 
-	respBody, errReadAll := io.ReadAll(resp.Body)
+	respBody, errReadAll := bodyutil.ReadAll(resp.Body, managementAPICallResponseLimit)
 	if errReadAll != nil {
+		if bodyutil.IsTooLarge(errReadAll) {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "upstream response too large"})
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
 	}
@@ -394,8 +403,11 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		}
 	}()
 
-	bodyBytes, errRead := io.ReadAll(resp.Body)
+	bodyBytes, errRead := bodyutil.ReadAll(resp.Body, managementOAuthTokenResponseLimit)
 	if errRead != nil {
+		if bodyutil.IsTooLarge(errRead) {
+			return "", fmt.Errorf("antigravity oauth token refresh response too large")
+		}
 		return "", errRead
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {

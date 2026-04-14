@@ -44,14 +44,18 @@ import (
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
 
 const (
-	anthropicCallbackPort   = 54545
-	geminiCallbackPort      = 8085
-	codexCallbackPort       = 1455
-	geminiCLIEndpoint       = "https://cloudcode-pa.googleapis.com"
-	geminiCLIVersion        = "v1internal"
-	geminiCLIUserAgent      = "google-api-nodejs-client/9.15.1"
-	geminiCLIApiClient      = "gl-node/22.17.0"
-	geminiCLIClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+	anthropicCallbackPort                     = 54545
+	geminiCallbackPort                        = 8085
+	codexCallbackPort                         = 1455
+	geminiCLIEndpoint                         = "https://cloudcode-pa.googleapis.com"
+	geminiCLIVersion                          = "v1internal"
+	geminiCLIUserAgent                        = "google-api-nodejs-client/9.15.1"
+	geminiCLIApiClient                        = "gl-node/22.17.0"
+	geminiCLIClientMetadata                   = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+	managementOAuthProfileResponseLimit int64 = 64 << 10
+	managementGCPProjectListLimit       int64 = 1 << 20
+	managementServiceUsageResponseLimit int64 = 128 << 10
+	managementGeminiCLIErrorBodyLimit   int64 = 256 << 10
 )
 
 type callbackForwarder struct {
@@ -1266,7 +1270,17 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 			}
 		}()
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementOAuthProfileResponseLimit)
+		if errReadBody != nil {
+			if bodyutil.IsTooLarge(errReadBody) {
+				log.Error("Get user info response too large")
+				SetOAuthSessionError(state, "Get user info response too large")
+				return
+			}
+			log.Errorf("Could not read user info response: %v", errReadBody)
+			SetOAuthSessionError(state, "Could not read user info response")
+			return
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			log.Errorf("Get user info request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 			SetOAuthSessionError(state, fmt.Sprintf("Get user info request failed with status %d", resp.StatusCode))
@@ -2348,7 +2362,13 @@ func callGeminiCLI(ctx context.Context, httpClient *http.Client, endpoint string
 	}()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementGeminiCLIErrorBodyLimit)
+		if errReadBody != nil {
+			if bodyutil.IsTooLarge(errReadBody) {
+				return fmt.Errorf("api request failed with status %d: response body too large", resp.StatusCode)
+			}
+			return fmt.Errorf("api request failed with status %d and unreadable body: %w", resp.StatusCode, errReadBody)
+		}
 		return fmt.Errorf("api request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
@@ -2381,7 +2401,13 @@ func fetchGCPProjects(ctx context.Context, httpClient *http.Client) ([]interface
 	}()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementGCPProjectListLimit)
+		if errReadBody != nil {
+			if bodyutil.IsTooLarge(errReadBody) {
+				return nil, fmt.Errorf("project list request failed with status %d: response body too large", resp.StatusCode)
+			}
+			return nil, fmt.Errorf("project list request failed with status %d and unreadable body: %w", resp.StatusCode, errReadBody)
+		}
 		return nil, fmt.Errorf("project list request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
@@ -2412,7 +2438,14 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementServiceUsageResponseLimit)
+			if errReadBody != nil {
+				_ = resp.Body.Close()
+				if bodyutil.IsTooLarge(errReadBody) {
+					return false, fmt.Errorf("service usage state response too large")
+				}
+				return false, fmt.Errorf("read service usage state response: %w", errReadBody)
+			}
 			if gjson.GetBytes(bodyBytes, "state").String() == "ENABLED" {
 				_ = resp.Body.Close()
 				continue
@@ -2432,7 +2465,14 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 			return false, fmt.Errorf("failed to execute request: %w", errDo)
 		}
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementServiceUsageResponseLimit)
+		if errReadBody != nil {
+			_ = resp.Body.Close()
+			if bodyutil.IsTooLarge(errReadBody) {
+				return false, fmt.Errorf("service enable response too large")
+			}
+			return false, fmt.Errorf("read service enable response: %w", errReadBody)
+		}
 		errMessage := string(bodyBytes)
 		errMessageResult := gjson.GetBytes(bodyBytes, "error.message")
 		if errMessageResult.Exists() {

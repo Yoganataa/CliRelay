@@ -80,6 +80,8 @@
 - [x] 将 HTTP 请求体读取统一迁移到 `bodyutil.ReadRequestBody`、`LimitBodyMiddleware` 或等价限流封装。完成时间：2026-04-14 09:46:33 +0800
 - [x] 为 multipart auth 文件上传增加服务端大小限制，确保与 raw JSON 上传和 Vertex 导入的限制策略一致。完成时间：2026-04-13 14:23:15 +0800
 - [x] 为 auth 文件下载路径评估流式响应替代方案，减少 `os.ReadFile + c.Data` 的整文件读入模式。完成时间：2026-04-13 15:03:48 +0800
+- [x] 为管理接口 `/v0/management/api-call` 的上游响应体增加读取上限，避免调试接口把异常大响应整体读入内存。完成时间：2026-04-14 10:30:05 +0800
+- [x] 为 Gemini CLI OAuth userinfo、GCP project list、service usage enable 检查与 Antigravity token refresh 等管理端“小响应”路径改用限量读取，避免认证辅助流程无上限读体。完成时间：2026-04-14 10:30:05 +0800
 - [ ] 为上游响应体和错误响应体定义 provider-specific 最大读取限制，避免大响应导致内存压力。完成时间：待填写
 - [ ] 将请求 handler 路径中的 `context.Background()` 改为 `c.Request.Context()` 或请求派生 context。完成时间：待填写
 - [x] 为 `gin.Engine` 显式配置 `SetTrustedProxies(nil)` 或受控代理白名单，禁止依赖 Gin 默认行为。完成时间：2026-04-13 14:23:15 +0800
@@ -99,7 +101,7 @@
 
 ## Phase 5：验证与守护
 
-- [x] 后端每个安全治理批次完成后运行 `go test ./...`，并记录失败修复过程。完成时间：2026-04-14 09:46:33 +0800
+- [x] 后端每个安全治理批次完成后运行 `go test ./...`，并记录失败修复过程。完成时间：2026-04-14 10:30:05 +0800
 - [x] 为 public lookup 中间件和 multipart 上传大小限制补充 Go 回归测试，并确认 `CliRelay` 全量 `go test ./...` 通过。完成时间：2026-04-13 14:23:15 +0800
 - [ ] 前端每个拆分批次完成后运行 `bun run lint`、`bun run build`、相关 `bun run test`，并记录 bundle 差异。完成时间：待填写
 - [x] 完成前端安全基线与 lint 清理批次后运行 `bun run check`，确认 lint 0 warning 且构建通过。完成时间：2026-04-13 14:39:21 +0800
