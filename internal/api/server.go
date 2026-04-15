@@ -427,7 +427,7 @@ func (s *Server) setupRoutes() {
 			abortChannelGroupRouteNotFound(c)
 			return
 		}
-		c.Set(internalrouting.GinPathRouteContextKey, route)
+		attachPathRouteContext(c, route)
 		c.Set("cliproxy.grouped_path_rewrite", true)
 		c.Request.URL.Path = apiPath
 		if c.Request.URL.RawQuery != "" {

@@ -205,6 +205,33 @@ func TestGroupedV1RouteForbiddenByAPIKeyGroups(t *testing.T) {
 	}
 }
 
+func TestGroupedNestedV1RouteForbiddenByAPIKeyGroups(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *proxyconfig.Config) {
+		cfg.SDKConfig.APIKeys = nil
+		cfg.SDKConfig.APIKeyEntries = []proxyconfig.APIKeyEntry{
+			{Key: "test-key", AllowedChannelGroups: []string{"free"}},
+		}
+		cfg.Routing.PathRoutes = []proxyconfig.RoutingPathRoute{
+			{Path: "/openai/plus", Group: "pro"},
+		}
+		cfg.SanitizeRouting()
+		cfg.SanitizeAPIKeyEntries()
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/plus/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer test-key")
+
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "channel_group_forbidden") {
+		t.Fatalf("expected channel_group_forbidden in body, got %s", rr.Body.String())
+	}
+}
+
 func TestGroupedV1RouteUnknownGroupReturnsNotFound(t *testing.T) {
 	server := newTestServer(t)
 

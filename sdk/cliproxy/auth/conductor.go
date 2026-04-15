@@ -1620,7 +1620,82 @@ func isRequestInvalidError(err error) bool {
 	if status != http.StatusBadRequest {
 		return false
 	}
-	return strings.Contains(err.Error(), "invalid_request_error")
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		return false
+	}
+	if strings.Contains(message, "invalid_request_error") {
+		return true
+	}
+	lowerMessage := strings.ToLower(message)
+	if strings.Contains(lowerMessage, "model is not supported") || strings.Contains(lowerMessage, "model not supported") {
+		return true
+	}
+	if strings.Contains(lowerMessage, "not supported when using codex with a chatgpt account") {
+		return true
+	}
+
+	var payload map[string]any
+	if !json.Valid([]byte(message)) {
+		return false
+	}
+	if errParse := json.Unmarshal([]byte(message), &payload); errParse != nil {
+		return false
+	}
+	lowerDetail := strings.ToLower(firstNonEmptyString(
+		nestedString(payload, "error", "type"),
+		nestedString(payload, "error", "code"),
+		nestedString(payload, "error", "message"),
+		stringValue(payload["detail"]),
+	))
+	if strings.Contains(lowerDetail, "invalid_request_error") {
+		return true
+	}
+	if strings.Contains(lowerDetail, "model is not supported") || strings.Contains(lowerDetail, "model not supported") {
+		return true
+	}
+	if strings.Contains(lowerDetail, "not supported when using codex with a chatgpt account") {
+		return true
+	}
+	return false
+}
+
+func nestedString(payload map[string]any, keys ...string) string {
+	if len(payload) == 0 || len(keys) == 0 {
+		return ""
+	}
+	current := any(payload)
+	for _, key := range keys {
+		asMap, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current = asMap[key]
+	}
+	return stringValue(current)
+}
+
+func stringValue(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []byte:
+		return strings.TrimSpace(string(typed))
+	default:
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time) {

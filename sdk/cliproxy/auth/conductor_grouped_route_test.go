@@ -64,6 +64,34 @@ func (e *sequenceExecutor) Calls() []string {
 	return out
 }
 
+type invalidModelExecutor struct {
+	sequenceExecutor
+}
+
+func (e *invalidModelExecutor) Execute(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+
+	e.mu.Lock()
+	e.execAuth = append(e.execAuth, authID)
+	e.mu.Unlock()
+
+	if authID == "auth-a" {
+		return cliproxyexecutor.Response{}, &Error{
+			Code:       "invalid_model",
+			Message:    `{"detail":"The 'gpt-5.1-codex' model is not supported when using Codex with a ChatGPT account."}`,
+			HTTPStatus: http.StatusBadRequest,
+		}
+	}
+	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
+}
+
 func registerGroupedRouteTestAuths(t *testing.T, manager *Manager) {
 	t.Helper()
 
@@ -135,5 +163,27 @@ func TestManagerExecute_NonGroupedRouteStillFailsOver(t *testing.T) {
 	}
 	if calls[0] != "auth-a" || calls[1] != "auth-b" {
 		t.Fatalf("expected failover sequence [auth-a auth-b], got %v", calls)
+	}
+}
+
+func TestManagerExecute_ModelNotSupportedBadRequestDoesNotFailOver(t *testing.T) {
+	t.Parallel()
+
+	executor := &invalidModelExecutor{}
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(executor)
+	registerGroupedRouteTestAuths(t, manager)
+
+	_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	calls := executor.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 upstream attempt, got %v", calls)
+	}
+	if calls[0] != "auth-a" {
+		t.Fatalf("expected first auth only, got %v", calls)
 	}
 }

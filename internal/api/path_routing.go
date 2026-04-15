@@ -10,6 +10,16 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+func attachPathRouteContext(c *gin.Context, route *internalrouting.PathRouteContext) {
+	if c == nil || route == nil {
+		return
+	}
+	c.Set(internalrouting.GinPathRouteContextKey, route)
+	if c.Request != nil {
+		c.Request = c.Request.WithContext(internalrouting.WithPathRouteContext(c.Request.Context(), route))
+	}
+}
+
 func resolvePathRouteContext(cfg *config.Config, authManager *cliproxyauth.Manager, rawGroup string) (*internalrouting.PathRouteContext, bool) {
 	group := internalrouting.NormalizeGroupName(rawGroup)
 	if group == "" {
@@ -54,7 +64,7 @@ func groupRoutingMiddleware(resolve func(string) (*internalrouting.PathRouteCont
 			abortChannelGroupRouteNotFound(c)
 			return
 		}
-		c.Set(internalrouting.GinPathRouteContextKey, route)
+		attachPathRouteContext(c, route)
 		c.Next()
 	}
 }
@@ -95,13 +105,8 @@ func splitGroupedAPIPath(path string) (string, string, bool) {
 
 func channelGroupAuthorizationMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		routeVal, exists := c.Get(internalrouting.GinPathRouteContextKey)
-		if !exists {
-			c.Next()
-			return
-		}
-		route, ok := routeVal.(*internalrouting.PathRouteContext)
-		if !ok || route == nil || route.Group == "" {
+		route := pathRouteContextFromGin(c)
+		if route == nil || route.Group == "" {
 			c.Next()
 			return
 		}
@@ -142,11 +147,16 @@ func pathRouteContextFromGin(c *gin.Context) *internalrouting.PathRouteContext {
 		return nil
 	}
 	raw, exists := c.Get(internalrouting.GinPathRouteContextKey)
-	if !exists {
-		return nil
+	if exists {
+		route, _ := raw.(*internalrouting.PathRouteContext)
+		if route != nil {
+			return route
+		}
 	}
-	route, _ := raw.(*internalrouting.PathRouteContext)
-	return route
+	if c.Request != nil {
+		return internalrouting.PathRouteContextFromContext(c.Request.Context())
+	}
+	return nil
 }
 
 func allowedChannelGroupsFromAccessMetadata(c *gin.Context) map[string]struct{} {

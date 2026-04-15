@@ -228,6 +228,10 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	allowedChannelGroups := ""
 	routeGroup := ""
 	routeFallback := ""
+	if route := internalrouting.PathRouteContextFromContext(ctx); route != nil {
+		routeGroup = strings.TrimSpace(route.Group)
+		routeFallback = strings.TrimSpace(route.Fallback)
+	}
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
@@ -942,6 +946,9 @@ func scopedProvidersForModel(modelName string, groups []string) []string {
 func routeContextFromExecutionContext(ctx context.Context) *internalrouting.PathRouteContext {
 	if ctx == nil {
 		return nil
+	}
+	if route := internalrouting.PathRouteContextFromContext(ctx); route != nil {
+		return route
 	}
 	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
 	if !ok || ginCtx == nil {

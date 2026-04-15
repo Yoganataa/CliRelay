@@ -171,3 +171,25 @@ func TestGetRequestDetails_RouteGroupRejectsConflictingModelPrefix(t *testing.T)
 		t.Fatalf("status = %d, want 400", errMsg.StatusCode)
 	}
 }
+
+func TestRequestExecutionMetadata_UsesPathRouteContextFromRequestContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = httptest.NewRequest("POST", "/openai/plus/v1/responses", nil)
+	route := &internalrouting.PathRouteContext{
+		RoutePath: "/openai/plus",
+		Group:     "pro",
+		Fallback:  "none",
+	}
+	ctx := internalrouting.WithPathRouteContext(context.Background(), route)
+	ctx = context.WithValue(ctx, util.ContextKeyGin, ginCtx)
+
+	meta := requestExecutionMetadata(ctx)
+	if got := meta["route_group"]; got != "pro" {
+		t.Fatalf("route_group = %v, want %q", got, "pro")
+	}
+	if got := meta["route_fallback"]; got != "none" {
+		t.Fatalf("route_fallback = %v, want %q", got, "none")
+	}
+}
