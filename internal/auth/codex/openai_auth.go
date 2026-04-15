@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,7 +38,7 @@ type CodexAuth struct {
 // It initializes an HTTP client with proxy settings from the provided configuration.
 func NewCodexAuth(cfg *config.Config) *CodexAuth {
 	return &CodexAuth{
-		httpClient: util.SetProxy(&cfg.SDKConfig, &http.Client{}),
+		httpClient: util.SetProxy(&cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout)),
 	}
 }
 
@@ -111,7 +110,7 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 		_ = resp.Body.Close()
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadHTTPResponseBody("codex-oauth", resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token response: %w", err)
 	}
@@ -197,7 +196,7 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
 		_ = resp.Body.Close()
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadHTTPResponseBody("codex-oauth", resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read refresh response: %w", err)
 	}

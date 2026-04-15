@@ -33,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -48,7 +49,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
+const (
+	oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
+	// Main API requests can legitimately spend several minutes waiting on upstream model execution.
+	// Long-lived SSE and websocket routes explicitly clear this deadline before streaming/upgrading.
+	mainAPIServerWriteTimeout = 10 * time.Minute
+)
 
 type serverOptionConfig struct {
 	extraMiddleware      []gin.HandlerFunc
@@ -186,6 +192,10 @@ type Server struct {
 	keepAliveOnTimeout func()
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
+
+	publicLookupRateMu          sync.Mutex
+	publicLookupRate            map[string]publicLookupRateLimitEntry
+	publicLookupRateLastCleanup time.Time
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -212,6 +222,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create gin engine
 	engine := gin.New()
+	if err := engine.SetTrustedProxies(nil); err != nil {
+		log.Warnf("failed to disable trusted proxies: %v", err)
+	}
 	if optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
 	}
@@ -239,7 +252,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		}
 	}
 
-	engine.Use(corsMiddleware())
+	engine.Use(corsMiddleware(cfg))
 	engine.Use(versionHeaderMiddleware())
 	wd, err := os.Getwd()
 	if err != nil {
@@ -319,8 +332,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create HTTP server
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler: engine,
+		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:           engine,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      mainAPIServerWriteTimeout,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	return s
@@ -338,33 +356,61 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 
+	registerV1Routes := func(group *gin.RouterGroup) {
+		group.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+		group.POST("/chat/completions", openaiHandlers.ChatCompletions)
+		group.POST("/completions", openaiHandlers.Completions)
+		group.POST("/messages", claudeCodeHandlers.ClaudeMessages)
+		group.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
+		group.GET("/responses", func(c *gin.Context) {
+			clearServerWriteDeadline(c)
+			openaiResponsesHandlers.ResponsesWebsocket(c)
+		})
+		group.POST("/responses", openaiResponsesHandlers.Responses)
+		group.POST("/responses/compact", openaiResponsesHandlers.Compact)
+	}
+	registerV1BetaRoutes := func(group *gin.RouterGroup) {
+		group.GET("/models", geminiHandlers.GeminiModels)
+		group.POST("/models/*action", geminiHandlers.GeminiHandler)
+		group.GET("/models/*action", geminiHandlers.GeminiGetHandler)
+	}
+	resolveRoute := func(rawGroup string) (*internalrouting.PathRouteContext, bool) {
+		return resolvePathRouteContext(s.cfg, s.handlers.AuthManager, rawGroup)
+	}
+
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(channelGroupAuthorizationMiddleware())
 	v1.Use(middleware.QuotaMiddleware())
 	v1.Use(ModelRestrictionMiddleware())
 	v1.Use(SystemPromptMiddleware())
-	{
-		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
-		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
-		v1.POST("/completions", openaiHandlers.Completions)
-		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
-		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
-		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
-		v1.POST("/responses", openaiResponsesHandlers.Responses)
-		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
-	}
+	registerV1Routes(v1)
+
+	groupedV1 := s.engine.Group("/:group/v1")
+	groupedV1.Use(groupRoutingMiddleware(resolveRoute))
+	groupedV1.Use(AuthMiddleware(s.accessManager))
+	groupedV1.Use(channelGroupAuthorizationMiddleware())
+	groupedV1.Use(middleware.QuotaMiddleware())
+	groupedV1.Use(ModelRestrictionMiddleware())
+	groupedV1.Use(SystemPromptMiddleware())
+	registerV1Routes(groupedV1)
 
 	// Gemini compatible API routes
 	v1beta := s.engine.Group("/v1beta")
 	v1beta.Use(AuthMiddleware(s.accessManager))
+	v1beta.Use(channelGroupAuthorizationMiddleware())
 	v1beta.Use(middleware.QuotaMiddleware())
 	v1beta.Use(ModelRestrictionMiddleware())
-	{
-		v1beta.GET("/models", geminiHandlers.GeminiModels)
-		v1beta.POST("/models/*action", geminiHandlers.GeminiHandler)
-		v1beta.GET("/models/*action", geminiHandlers.GeminiGetHandler)
-	}
+	registerV1BetaRoutes(v1beta)
+
+	groupedV1Beta := s.engine.Group("/:group/v1beta")
+	groupedV1Beta.Use(groupRoutingMiddleware(resolveRoute))
+	groupedV1Beta.Use(AuthMiddleware(s.accessManager))
+	groupedV1Beta.Use(channelGroupAuthorizationMiddleware())
+	groupedV1Beta.Use(middleware.QuotaMiddleware())
+	groupedV1Beta.Use(ModelRestrictionMiddleware())
+	registerV1BetaRoutes(groupedV1Beta)
 
 	// Root endpoint
 	s.engine.GET("/", func(c *gin.Context) {
@@ -485,6 +531,7 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 		authMiddleware(c)
 	}
 	finalHandler := func(c *gin.Context) {
+		clearServerWriteDeadline(c)
 		handler.ServeHTTP(c.Writer, c.Request)
 		c.Abort()
 	}
@@ -507,8 +554,14 @@ func (s *Server) registerManagementRoutes() {
 	{
 		mgmt.GET("/dashboard-summary", s.mgmt.GetDashboardSummary)
 		mgmt.GET("/system-stats", s.mgmt.GetSystemStats)
-		mgmt.GET("/system-stats/ws", s.mgmt.SystemStatsWebSocket)
+		mgmt.GET("/system-stats/ws", func(c *gin.Context) {
+			clearServerWriteDeadline(c)
+			s.mgmt.SystemStatsWebSocket(c)
+		})
 		mgmt.GET("/models", s.mgmt.GetModels)
+		mgmt.GET("/channel-groups", s.mgmt.GetChannelGroups)
+		mgmt.GET("/routing-config", s.mgmt.GetRoutingConfig)
+		mgmt.PUT("/routing-config", s.mgmt.PutRoutingConfig)
 		mgmt.GET("/model-pricing", s.mgmt.GetModelPricing)
 		mgmt.PUT("/model-pricing", s.mgmt.PutModelPricing)
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
@@ -680,12 +733,16 @@ func (s *Server) registerManagementRoutes() {
 
 	// Public endpoints - no management key required
 	pub := s.engine.Group("/v0/management/public")
-	pub.Use(s.managementAvailabilityMiddleware())
+	pub.Use(s.managementAvailabilityMiddleware(), publicLookupNoStoreMiddleware(), s.publicLookupRateLimitMiddleware())
 	{
 		pub.GET("/usage", s.mgmt.GetPublicUsageByAPIKey)
+		pub.POST("/usage", s.mgmt.GetPublicUsageByAPIKey)
 		pub.GET("/usage/logs", s.mgmt.GetPublicUsageLogs)
+		pub.POST("/usage/logs", s.mgmt.GetPublicUsageLogs)
 		pub.GET("/usage/logs/:id/content", s.mgmt.GetPublicLogContent)
+		pub.POST("/usage/logs/:id/content", s.mgmt.GetPublicLogContent)
 		pub.GET("/usage/chart-data", s.mgmt.GetPublicUsageChartData)
+		pub.POST("/usage/chart-data", s.mgmt.GetPublicUsageChartData)
 	}
 }
 
@@ -717,7 +774,13 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 		if _, err := os.Stat(filePath); err != nil {
 			if os.IsNotExist(err) {
-				if !managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
+				reqCtx := context.Background()
+				if c != nil && c.Request != nil {
+					if requestCtx := c.Request.Context(); requestCtx != nil {
+						reqCtx = requestCtx
+					}
+				}
+				if !managementasset.EnsureLatestManagementHTML(reqCtx, managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
 					c.AbortWithStatus(http.StatusNotFound)
 					return
 				}
@@ -759,6 +822,13 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	// HTML files should not be cached – always serve fresh.
 	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 	c.File(htmlFile)
+}
+
+func clearServerWriteDeadline(c *gin.Context) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
 }
 
 // resolvePanelDir returns the directory containing the SPA panel (manage.html + assets/).
@@ -960,6 +1030,12 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		// Check if this API key has allowed-models restriction
 		var allowedModels map[string]struct{}
 		var allowedChannels map[string]struct{}
+		allowedChannelGroups := allowedChannelGroupsFromAccessMetadata(c)
+		routeCtx := pathRouteContextFromGin(c)
+		routeGroup := ""
+		if routeCtx != nil {
+			routeGroup = routeCtx.Group
+		}
 		if metadataVal, exists := c.Get("accessMetadata"); exists {
 			if metadata, ok := metadataVal.(map[string]string); ok {
 				if allowedStr, exists := metadata["allowed-models"]; exists && allowedStr != "" {
@@ -990,7 +1066,7 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 		}
 
 		// If no restriction, just call the handler directly
-		if allowedModels == nil && allowedChannels == nil {
+		if allowedModels == nil && allowedChannels == nil && allowedChannelGroups == nil && routeGroup == "" {
 			userAgent := c.GetHeader("User-Agent")
 			if strings.HasPrefix(userAgent, "claude-cli") {
 				claudeHandler.ClaudeModels(c)
@@ -1035,8 +1111,8 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 						continue
 					}
 				}
-				if allowedChannels != nil {
-					if s.handlers == nil || s.handlers.AuthManager == nil || !s.handlers.AuthManager.CanServeModelWithChannels(id, allowedChannels) {
+				if allowedChannels != nil || allowedChannelGroups != nil || routeGroup != "" {
+					if s.handlers == nil || s.handlers.AuthManager == nil || !s.handlers.AuthManager.CanServeModelWithScopes(id, allowedChannels, allowedChannelGroups, routeGroup) {
 						continue
 					}
 				}
@@ -1142,7 +1218,7 @@ func (s *Server) Stop(ctx context.Context) error {
 //
 // Returns:
 //   - gin.HandlerFunc: The CORS middleware handler
-func corsMiddleware() gin.HandlerFunc {
+func corsMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Management APIs and the embedded panel should not be callable cross-origin by default.
 		// The panel is served from the same origin, so it does not need wildcard CORS.
@@ -1154,9 +1230,30 @@ func corsMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := ""
+		if c != nil && c.Request != nil {
+			origin = strings.TrimSpace(c.Request.Header.Get("Origin"))
+		}
+		if origin == "" {
+			if c.Request.Method == http.MethodOptions {
+				c.AbortWithStatus(http.StatusNoContent)
+				return
+			}
+			c.Next()
+			return
+		}
+
+		allowedOrigin := resolveAllowedCORSOrigin(c.Request, cfg)
+		if allowedOrigin == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin not allowed"})
+			return
+		}
+
+		c.Header("Vary", "Origin")
+		c.Header("Access-Control-Allow-Origin", allowedOrigin)
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "*")
+		c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Origin")
+		c.Header("Access-Control-Expose-Headers", "X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -1165,6 +1262,36 @@ func corsMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func resolveAllowedCORSOrigin(r *http.Request, cfg *config.Config) string {
+	if r == nil {
+		return ""
+	}
+
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return ""
+	}
+
+	if util.WebsocketOriginAllowed(&http.Request{
+		Header: http.Header{"Origin": []string{origin}, "X-Forwarded-Host": r.Header.Values("X-Forwarded-Host")},
+		Host:   r.Host,
+	}) {
+		return origin
+	}
+
+	if cfg == nil {
+		return ""
+	}
+
+	for _, candidate := range cfg.CORSAllowOrigins {
+		if strings.EqualFold(strings.TrimSpace(candidate), origin) {
+			return origin
+		}
+	}
+
+	return ""
 }
 
 // versionHeaderMiddleware returns a Gin middleware handler that adds version
@@ -1311,6 +1438,9 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok {
 		dirSetter.SetBaseDir(cfg.AuthDir)
 	}
+	// Counting auth entries is a config-application bookkeeping step that is not
+	// tied to any request lifecycle. It intentionally uses a root context and
+	// degrades to zero on listing failure inside util.CountAuthFiles.
 	authEntries := util.CountAuthFiles(context.Background(), tokenStore)
 	geminiAPIKeyCount := len(cfg.GeminiKey)
 	claudeAPIKeyCount := len(cfg.ClaudeKey)

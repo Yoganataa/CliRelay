@@ -43,6 +43,10 @@ type Config struct {
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
+	// CORSAllowOrigins defines the explicit browser origins allowed to call API routes cross-origin.
+	// Leave empty to disable cross-origin browser access by default.
+	CORSAllowOrigins []string `yaml:"cors-allow-origins" json:"cors-allow-origins"`
+
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
@@ -179,6 +183,8 @@ type PprofConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Addr is the host:port address for the pprof HTTP server.
 	Addr string `yaml:"addr" json:"addr"`
+	// AllowRemote permits binding pprof to non-loopback addresses.
+	AllowRemote bool `yaml:"allow-remote" json:"allow-remote"`
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.
@@ -209,6 +215,15 @@ type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// IncludeDefaultGroup keeps unprefixed channels addressable via the implicit "default" group.
+	IncludeDefaultGroup bool `yaml:"include-default-group,omitempty" json:"include-default-group,omitempty"`
+
+	// ChannelGroups defines named channel groups used by path routing and API key permissions.
+	ChannelGroups []RoutingChannelGroup `yaml:"channel-groups,omitempty" json:"channel-groups,omitempty"`
+
+	// PathRoutes maps URL path namespaces to channel groups.
+	PathRoutes []RoutingPathRoute `yaml:"path-routes,omitempty" json:"path-routes,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -604,6 +619,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RequestLogStorage.MaxTotalSizeMB = 1024
 	cfg.RequestLogStorage.VacuumOnCleanup = true
 	cfg.DisableCooling = false
+	cfg.Routing.IncludeDefaultGroup = true
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
@@ -695,6 +711,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
+
+	// Normalize routing configuration.
+	cfg.SanitizeRouting()
+
+	// Normalize API-key group restrictions.
+	cfg.SanitizeAPIKeyEntries()
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()

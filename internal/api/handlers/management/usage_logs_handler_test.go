@@ -1,12 +1,14 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,7 +125,7 @@ func TestGetUsageLogs_EmptyDB_DoesNotReturnNullSlices(t *testing.T) {
 	}
 
 	var payload struct {
-		Items []any `json:"items"`
+		Items   []any `json:"items"`
 		Filters struct {
 			APIKeys     []string          `json:"api_keys"`
 			APIKeyNames map[string]string `json:"api_key_names"`
@@ -254,10 +256,11 @@ func TestGetPublicUsageLogs_EmptyDB_DoesNotReturnNullModels(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(
-		http.MethodGet,
-		"/v0/management/public/usage/logs?api_key=sk-test&days=7&page=1&size=50",
-		nil,
+		http.MethodPost,
+		"/v0/management/public/usage/logs",
+		bytes.NewReader([]byte(`{"api_key":"sk-test","days":7,"page":1,"size":50}`)),
 	)
+	c.Request.Header.Set("Content-Type", "application/json")
 
 	h.GetPublicUsageLogs(c)
 
@@ -275,5 +278,129 @@ func TestGetPublicUsageLogs_EmptyDB_DoesNotReturnNullModels(t *testing.T) {
 	}
 	if payload.Filters.Models == nil {
 		t.Fatalf("filters.models is null; expected []")
+	}
+}
+
+func TestGetPublicUsageLogs_AcceptsPOSTBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	h := &Handler{
+		cfg: &config.Config{},
+	}
+
+	body := []byte(`{"api_key":"sk-test","days":7,"page":1,"size":50}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/public/usage/logs",
+		bytes.NewReader(body),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.GetPublicUsageLogs(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Filters struct {
+			Models []string `json:"models"`
+		} `json:"filters"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if payload.Filters.Models == nil {
+		t.Fatalf("filters.models is null; expected []")
+	}
+}
+
+func TestGetPublicUsageLogs_DoesNotReadAPIKeyFromQuery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	h := &Handler{
+		cfg: &config.Config{},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodGet,
+		"/v0/management/public/usage/logs?api_key=sk-test&days=7&page=1&size=50",
+		nil,
+	)
+
+	h.GetPublicUsageLogs(c)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "api_key parameter is required") {
+		t.Fatalf("expected query api_key to be ignored, body=%s", rec.Body.String())
+	}
+}
+
+func TestGetPublicUsageLogs_RejectsOversizedPOSTBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "usage.db")
+	if err := usage.InitDB(dbPath, config.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	t.Cleanup(func() {
+		usage.CloseDB()
+		_ = os.Remove(dbPath)
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+	})
+
+	h := &Handler{
+		cfg: &config.Config{},
+	}
+
+	body := bytes.Repeat([]byte("a"), int(publicLookupBodyLimit)+1)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v0/management/public/usage/logs",
+		bytes.NewReader(body),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.GetPublicUsageLogs(c)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d, body=%s", http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request body too large") {
+		t.Fatalf("expected oversized body rejection, body=%s", rec.Body.String())
 	}
 }

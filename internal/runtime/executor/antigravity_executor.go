@@ -253,7 +253,13 @@ attemptLoop:
 			}
 
 			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-			bodyBytes, errRead := io.ReadAll(httpResp.Body)
+			readBody := readUpstreamResponseBody
+			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+				readBody = func(provider string, r io.Reader) ([]byte, error) {
+					return readUpstreamErrorBody(provider, r), nil
+				}
+			}
+			bodyBytes, errRead := readBody("antigravity", httpResp.Body)
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("antigravity executor: close response body error: %v", errClose)
 			}
@@ -395,7 +401,9 @@ attemptLoop:
 			}
 			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-				bodyBytes, errRead := io.ReadAll(httpResp.Body)
+				bodyBytes, errRead := func() ([]byte, error) {
+					return readUpstreamErrorBody(e.Identifier(), httpResp.Body), nil
+				}()
 				if errClose := httpResp.Body.Close(); errClose != nil {
 					log.Errorf("antigravity executor: close response body error: %v", errClose)
 				}
@@ -786,7 +794,9 @@ attemptLoop:
 			}
 			recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-				bodyBytes, errRead := io.ReadAll(httpResp.Body)
+				bodyBytes, errRead := func() ([]byte, error) {
+					return readUpstreamErrorBody(e.Identifier(), httpResp.Body), nil
+				}()
 				if errClose := httpResp.Body.Close(); errClose != nil {
 					log.Errorf("antigravity executor: close response body error: %v", errClose)
 				}
@@ -1022,7 +1032,13 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		}
 
 		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-		bodyBytes, errRead := io.ReadAll(httpResp.Body)
+		readBody := readUpstreamResponseBody
+		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+			readBody = func(provider string, r io.Reader) ([]byte, error) {
+				return readUpstreamErrorBody(provider, r), nil
+			}
+		}
+		bodyBytes, errRead := readBody("antigravity", httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("antigravity executor: close response body error: %v", errClose)
 		}
@@ -1109,7 +1125,13 @@ func FetchAntigravityModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *c
 			return fallbackAntigravityPrimaryModels()
 		}
 
-		bodyBytes, errRead := io.ReadAll(httpResp.Body)
+		readBody := readUpstreamResponseBody
+		if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+			readBody = func(provider string, r io.Reader) ([]byte, error) {
+				return readUpstreamErrorBody(provider, r), nil
+			}
+		}
+		bodyBytes, errRead := readBody("antigravity", httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("antigravity executor: close response body error: %v", errClose)
 		}
@@ -1206,11 +1228,12 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 	if accessToken != "" && expiry.After(time.Now().Add(refreshSkew)) {
 		return accessToken, nil, nil
 	}
-	refreshCtx := context.Background()
-	if ctx != nil {
-		if rt, ok := ctx.Value(util.ContextKeyRoundTripper).(http.RoundTripper); ok && rt != nil {
-			refreshCtx = context.WithValue(refreshCtx, util.ContextKeyRoundTripper, rt)
-		}
+	// Token refresh is part of the active request path, so request cancellation
+	// should propagate through the refresh call. Callers that intentionally need
+	// detachment can pass context.WithoutCancel(ctx) themselves.
+	refreshCtx := ctx
+	if refreshCtx == nil {
+		refreshCtx = context.Background()
 	}
 	updated, errRefresh := e.refreshToken(refreshCtx, auth.Clone())
 	if errRefresh != nil {
@@ -1261,7 +1284,13 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 		}
 	}()
 
-	bodyBytes, errRead := io.ReadAll(httpResp.Body)
+	readBody := readUpstreamResponseBody
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		readBody = func(provider string, r io.Reader) ([]byte, error) {
+			return readUpstreamErrorBody(provider, r), nil
+		}
+	}
+	bodyBytes, errRead := readBody(e.Identifier(), httpResp.Body)
 	if errRead != nil {
 		return auth, errRead
 	}

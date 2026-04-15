@@ -1,5 +1,7 @@
 package cliproxy
 
+import "context"
+
 import (
 	"strings"
 	"testing"
@@ -32,7 +34,7 @@ func TestRegisterModelsForAuth_UsesPreMergedExcludedModelsAttribute(t *testing.T
 		registry.UnregisterClient(auth.ID)
 	})
 
-	service.registerModelsForAuth(auth)
+	service.registerModelsForAuth(context.Background(), auth)
 
 	models := registry.GetAvailableModelsByProvider("gemini-cli")
 	if len(models) == 0 {

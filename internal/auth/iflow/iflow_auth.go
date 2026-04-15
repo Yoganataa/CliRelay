@@ -26,6 +26,7 @@ const (
 
 	// Cookie authentication endpoints
 	iFlowAPIKeyEndpoint = "https://platform.iflow.cn/api/openapi/apikey"
+	iflowOAuthBodyLabel = "iflow-oauth"
 
 	// Client credentials provided by iFlow for the Code Assist integration.
 	iFlowOAuthClientID     = "10009311001"
@@ -118,7 +119,7 @@ func (ia *IFlowAuth) doTokenRequest(ctx context.Context, req *http.Request) (*IF
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadHTTPResponseBody("iflow-oauth", resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("iflow token: read response failed: %w", err)
 	}
@@ -185,7 +186,7 @@ func (ia *IFlowAuth) FetchUserInfo(ctx context.Context, accessToken string) (*us
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := util.ReadHTTPResponseBody("iflow-oauth", resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("iflow api key: read response failed: %w", err)
 	}
@@ -367,7 +368,7 @@ func (ia *IFlowAuth) fetchAPIKeyInfo(ctx context.Context, cookie string) (*iFlow
 		reader = gzipReader
 	}
 
-	body, err := io.ReadAll(reader)
+	body, err := util.ReadHTTPResponseBody(iflowOAuthBodyLabel, reader)
 	if err != nil {
 		return nil, fmt.Errorf("iflow cookie: read GET response failed: %w", err)
 	}
@@ -446,7 +447,7 @@ func (ia *IFlowAuth) RefreshAPIKey(ctx context.Context, cookie, name string) (*i
 		reader = gzipReader
 	}
 
-	body, err := io.ReadAll(reader)
+	body, err := util.ReadHTTPResponseBody(iflowOAuthBodyLabel, reader)
 	if err != nil {
 		return nil, fmt.Errorf("iflow cookie refresh: read POST response failed: %w", err)
 	}

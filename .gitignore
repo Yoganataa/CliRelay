@@ -29,6 +29,16 @@ auths/*
 docs/*
 !docs/images/
 !docs/images/*.png
+!docs/internal-review/
+docs/internal-review/*
+!docs/internal-review/io-readall-inventory.md
+!docs/internal-review/monorepo-audit-report.md
+!docs/internal-review/monorepo-remediation-checklist.md
+!docs/internal-review/performance-regression-checks.md
+!docs/internal-review/quality-baseline.md
+!docs/internal-review/release-checklist.md
+!docs/internal-review/security-baseline-checks.md
+!docs/internal-review/sensitive-ops-audit-log-inventory.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md

@@ -44,14 +44,18 @@ import (
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
 
 const (
-	anthropicCallbackPort   = 54545
-	geminiCallbackPort      = 8085
-	codexCallbackPort       = 1455
-	geminiCLIEndpoint       = "https://cloudcode-pa.googleapis.com"
-	geminiCLIVersion        = "v1internal"
-	geminiCLIUserAgent      = "google-api-nodejs-client/9.15.1"
-	geminiCLIApiClient      = "gl-node/22.17.0"
-	geminiCLIClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+	anthropicCallbackPort                     = 54545
+	geminiCallbackPort                        = 8085
+	codexCallbackPort                         = 1455
+	geminiCLIEndpoint                         = "https://cloudcode-pa.googleapis.com"
+	geminiCLIVersion                          = "v1internal"
+	geminiCLIUserAgent                        = "google-api-nodejs-client/9.15.1"
+	geminiCLIApiClient                        = "gl-node/22.17.0"
+	geminiCLIClientMetadata                   = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+	managementOAuthProfileResponseLimit int64 = 64 << 10
+	managementGCPProjectListLimit       int64 = 1 << 20
+	managementServiceUsageResponseLimit int64 = 128 << 10
+	managementGeminiCLIErrorBodyLimit   int64 = 256 << 10
 )
 
 type callbackForwarder struct {
@@ -140,7 +144,7 @@ func startCallbackForwarder(port int, provider, targetBase string) (*callbackFor
 	callbackForwardersMu.Unlock()
 
 	if prev != nil {
-		stopForwarderInstance(port, prev)
+		stopForwarderInstance(context.Background(), port, prev)
 	}
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -199,10 +203,10 @@ func stopCallbackForwarder(port int) {
 	}
 	callbackForwardersMu.Unlock()
 
-	stopForwarderInstance(port, forwarder)
+	stopForwarderInstance(context.Background(), port, forwarder)
 }
 
-func stopCallbackForwarderInstance(port int, forwarder *callbackForwarder) {
+func stopCallbackForwarderInstance(ctx context.Context, port int, forwarder *callbackForwarder) {
 	if forwarder == nil {
 		return
 	}
@@ -212,15 +216,19 @@ func stopCallbackForwarderInstance(port int, forwarder *callbackForwarder) {
 	}
 	callbackForwardersMu.Unlock()
 
-	stopForwarderInstance(port, forwarder)
+	stopForwarderInstance(ctx, port, forwarder)
 }
 
-func stopForwarderInstance(port int, forwarder *callbackForwarder) {
+func stopForwarderInstance(ctx context.Context, port int, forwarder *callbackForwarder) {
 	if forwarder == nil || forwarder.server == nil {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	parentCtx := ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, 2*time.Second)
 	defer cancel()
 
 	if err := forwarder.server.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -519,7 +527,7 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		return
 	}
 	full := filepath.Join(h.cfg.AuthDir, name)
-	data, err := os.ReadFile(full)
+	_, err := os.Stat(full)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.JSON(404, gin.H{"error": "file not found"})
@@ -528,8 +536,7 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		}
 		return
 	}
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
-	c.Data(200, "application/json", data)
+	c.FileAttachment(full, name)
 }
 
 // Upload auth file: multipart or raw JSON with ?name=
@@ -539,7 +546,24 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	if file, err := c.FormFile("file"); err == nil && file != nil {
+	if c.Request != nil && c.Request.Body != nil && c.Writer != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, bodyutil.AuthFileBodyLimit+(64<<10))
+	}
+	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		file, err := c.FormFile("file")
+		if err != nil {
+			if bodyutil.IsTooLarge(err) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+				return
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
+			return
+		}
+		if file.Size > bodyutil.AuthFileBodyLimit {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			return
+		}
 		name := filepath.Base(file.Filename)
 		if !strings.HasSuffix(strings.ToLower(name), ".json") {
 			c.JSON(400, gin.H{"error": "file must be .json"})
@@ -675,16 +699,33 @@ func (h *Handler) authIDForPath(path string) string {
 		return ""
 	}
 	if h == nil || h.cfg == nil {
-		return path
+		return filepath.Clean(path)
 	}
-	authDir := strings.TrimSpace(h.cfg.AuthDir)
-	if authDir == "" {
-		return path
+	authDir, errResolve := util.ResolveAuthDir(h.cfg.AuthDir)
+	if errResolve != nil || strings.TrimSpace(authDir) == "" {
+		return filepath.Clean(path)
 	}
-	if rel, err := filepath.Rel(authDir, path); err == nil && rel != "" {
+	if !filepath.IsAbs(authDir) {
+		if abs, errAbs := filepath.Abs(authDir); errAbs == nil {
+			authDir = abs
+		}
+	}
+	if evaluated, errEval := filepath.EvalSymlinks(authDir); errEval == nil {
+		authDir = evaluated
+	}
+	normalizedPath := filepath.Clean(path)
+	if !filepath.IsAbs(normalizedPath) {
+		if abs, errAbs := filepath.Abs(normalizedPath); errAbs == nil {
+			normalizedPath = abs
+		}
+	}
+	if evaluated, errEval := filepath.EvalSymlinks(normalizedPath); errEval == nil {
+		normalizedPath = evaluated
+	}
+	if rel, err := filepath.Rel(authDir, normalizedPath); err == nil && rel != "" && rel != "." && !strings.HasPrefix(rel, "..") {
 		return rel
 	}
-	return path
+	return normalizedPath
 }
 
 func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []byte) error {
@@ -1035,7 +1076,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(anthropicCallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(ctx, anthropicCallbackPort, forwarder)
 		}
 
 		// Helper: wait for callback file
@@ -1128,7 +1169,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 
 func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 	ctx := detachedAuthContext(c)
-	proxyHTTPClient := util.SetProxy(&h.cfg.SDKConfig, &http.Client{})
+	proxyHTTPClient := util.SetProxy(&h.cfg.SDKConfig, util.NewHTTPClient(util.DefaultHTTPClientTimeout))
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, proxyHTTPClient)
 
 	// Optional project ID from query
@@ -1180,7 +1221,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(geminiCallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(ctx, geminiCallbackPort, forwarder)
 		}
 
 		// Wait for callback file written by server route
@@ -1250,7 +1291,17 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 			}
 		}()
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementOAuthProfileResponseLimit)
+		if errReadBody != nil {
+			if bodyutil.IsTooLarge(errReadBody) {
+				log.Error("Get user info response too large")
+				SetOAuthSessionError(state, "Get user info response too large")
+				return
+			}
+			log.Errorf("Could not read user info response: %v", errReadBody)
+			SetOAuthSessionError(state, "Could not read user info response")
+			return
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			log.Errorf("Get user info request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 			SetOAuthSessionError(state, fmt.Sprintf("Get user info request failed with status %d", resp.StatusCode))
@@ -1446,7 +1497,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(codexCallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(ctx, codexCallbackPort, forwarder)
 		}
 
 		// Wait for callback file
@@ -1580,7 +1631,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(antigravity.CallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(ctx, antigravity.CallbackPort, forwarder)
 		}
 
 		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-antigravity-%s.oauth", state))
@@ -1867,7 +1918,7 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 
 	go func() {
 		if isWebUI {
-			defer stopCallbackForwarderInstance(iflowauth.CallbackPort, forwarder)
+			defer stopCallbackForwarderInstance(ctx, iflowauth.CallbackPort, forwarder)
 		}
 		fmt.Println("Waiting for authentication...")
 
@@ -2332,7 +2383,13 @@ func callGeminiCLI(ctx context.Context, httpClient *http.Client, endpoint string
 	}()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementGeminiCLIErrorBodyLimit)
+		if errReadBody != nil {
+			if bodyutil.IsTooLarge(errReadBody) {
+				return fmt.Errorf("api request failed with status %d: response body too large", resp.StatusCode)
+			}
+			return fmt.Errorf("api request failed with status %d and unreadable body: %w", resp.StatusCode, errReadBody)
+		}
 		return fmt.Errorf("api request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
@@ -2365,7 +2422,13 @@ func fetchGCPProjects(ctx context.Context, httpClient *http.Client) ([]interface
 	}()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementGCPProjectListLimit)
+		if errReadBody != nil {
+			if bodyutil.IsTooLarge(errReadBody) {
+				return nil, fmt.Errorf("project list request failed with status %d: response body too large", resp.StatusCode)
+			}
+			return nil, fmt.Errorf("project list request failed with status %d and unreadable body: %w", resp.StatusCode, errReadBody)
+		}
 		return nil, fmt.Errorf("project list request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
@@ -2396,7 +2459,14 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementServiceUsageResponseLimit)
+			if errReadBody != nil {
+				_ = resp.Body.Close()
+				if bodyutil.IsTooLarge(errReadBody) {
+					return false, fmt.Errorf("service usage state response too large")
+				}
+				return false, fmt.Errorf("read service usage state response: %w", errReadBody)
+			}
 			if gjson.GetBytes(bodyBytes, "state").String() == "ENABLED" {
 				_ = resp.Body.Close()
 				continue
@@ -2416,7 +2486,14 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 			return false, fmt.Errorf("failed to execute request: %w", errDo)
 		}
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, errReadBody := bodyutil.ReadAll(resp.Body, managementServiceUsageResponseLimit)
+		if errReadBody != nil {
+			_ = resp.Body.Close()
+			if bodyutil.IsTooLarge(errReadBody) {
+				return false, fmt.Errorf("service enable response too large")
+			}
+			return false, fmt.Errorf("read service enable response: %w", errReadBody)
+		}
 		errMessage := string(bodyBytes)
 		errMessageResult := gjson.GetBytes(bodyBytes, "error.message")
 		if errMessageResult.Exists() {
@@ -2450,6 +2527,10 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 
 	_, status, ok := GetOAuthSession(state)
 	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		return
+	}
+	if status == oauthSessionStatusCompleted {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}

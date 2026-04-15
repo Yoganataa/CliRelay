@@ -9,7 +9,6 @@ package claude
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,16 +62,8 @@ func (h *ClaudeCodeAPIHandler) Models() []map[string]any {
 // Parameters:
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
-	// Extract raw JSON data from the incoming request
-	rawJSON, err := c.GetRawData()
-	// If data retrieval fails, return a 400 Bad Request error.
-	if err != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := handlers.ReadJSONRequestBody(c)
+	if !ok {
 		return
 	}
 
@@ -92,23 +83,15 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 // Parameters:
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
-	// Extract raw JSON data from the incoming request
-	rawJSON, err := c.GetRawData()
-	// If data retrieval fails, return a 400 Bad Request error.
-	if err != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := handlers.ReadJSONRequestBody(c)
+	if !ok {
 		return
 	}
 
 	c.Header("Content-Type", "application/json")
 
 	alt := h.GetAlt(c)
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 
@@ -161,7 +144,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
 func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte) {
 	c.Header("Content-Type", "application/json")
 	alt := h.GetAlt(c)
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
@@ -225,14 +208,13 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 
 	// Create a cancellable context for the backend client request
 	// This allows proper cleanup and cancellation of ongoing requests
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, c.Request.Context())
 
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
 		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
 	}
 
 	// Peek at the first chunk to determine success or failure before setting headers

@@ -15,7 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
-	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -75,6 +75,9 @@ type Service struct {
 	// authQueueStop cancels the auth update queue processing.
 	authQueueStop context.CancelFunc
 
+	// authQueueWG waits for the service-owned auth update queue goroutine.
+	authQueueWG sync.WaitGroup
+
 	// authManager handles legacy authentication operations.
 	authManager *sdkAuth.Manager
 
@@ -123,7 +126,11 @@ func (s *Service) ensureAuthUpdateQueue(ctx context.Context) {
 	}
 	queueCtx, cancel := context.WithCancel(ctx)
 	s.authQueueStop = cancel
-	go s.consumeAuthUpdates(queueCtx)
+	s.authQueueWG.Add(1)
+	go func() {
+		defer s.authQueueWG.Done()
+		s.consumeAuthUpdates(queueCtx)
+	}()
 }
 
 func (s *Service) consumeAuthUpdates(ctx context.Context) {
@@ -155,6 +162,10 @@ func (s *Service) emitAuthUpdate(ctx context.Context, update watcher.AuthUpdate)
 		return
 	}
 	if ctx == nil {
+		// Service-originated updates (for example websocket provider lifecycle events)
+		// may be emitted outside any request scope. In that case the service owns a
+		// detached root context and the downstream auth-update queue provides the
+		// bounded handoff/cleanup behavior.
 		ctx = context.Background()
 	}
 	if s.watcher != nil && s.watcher.DispatchRuntimeAuthUpdate(update) {
@@ -245,7 +256,9 @@ func (s *Service) wsOnConnected(channelID string) {
 		Metadata:   map[string]any{"email": channelID}, // metadata drives logging and usage tracking
 	}
 	log.Infof("websocket provider connected: %s", channelID)
-	s.emitAuthUpdate(context.Background(), watcher.AuthUpdate{
+	// Websocket provider presence is a service-owned runtime signal, not a
+	// request-scoped action. Detach it from any transient caller cancellation.
+	s.emitAuthUpdate(context.WithoutCancel(context.Background()), watcher.AuthUpdate{
 		Action: watcher.AuthUpdateActionAdd,
 		ID:     auth.ID,
 		Auth:   auth,
@@ -265,8 +278,9 @@ func (s *Service) wsOnDisconnected(channelID string, reason error) {
 	} else {
 		log.Infof("websocket provider disconnected: %s", channelID)
 	}
-	ctx := context.Background()
-	s.emitAuthUpdate(ctx, watcher.AuthUpdate{
+	// Disconnect notifications are also service-owned runtime events and must
+	// still be processed during shutdown and reconnect churn.
+	s.emitAuthUpdate(context.WithoutCancel(context.Background()), watcher.AuthUpdate{
 		Action: watcher.AuthUpdateActionDelete,
 		ID:     channelID,
 	})
@@ -308,7 +322,7 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	// Register models after auth is updated in coreManager.
 	// This operation may block on network calls, but the auth configuration
 	// is already effective at this point.
-	s.registerModelsForAuth(auth)
+	s.registerModelsForAuth(ctx, auth)
 }
 
 func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
@@ -459,12 +473,16 @@ func (s *Service) Run(ctx context.Context) error {
 		return fmt.Errorf("cliproxy: service is nil")
 	}
 	if ctx == nil {
+		// The top-level service may be started without an external owner context.
+		// In that case it owns the root process lifetime itself.
 		ctx = context.Background()
 	}
 
 	usage.StartDefault(ctx)
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Shutdown needs a bounded context that survives parent cancellation long
+	// enough to stop the HTTP server, watcher, websocket gateway, and pprof cleanly.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer shutdownCancel()
 	defer func() {
 		if err := s.Shutdown(shutdownCtx); err != nil {
@@ -509,7 +527,9 @@ func (s *Service) Run(ctx context.Context) error {
 				return
 			}
 			if !oldEnabled && newEnabled {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				// Existing websocket sessions are service-owned and must be terminated
+				// even if the caller that changed config has already been cancelled.
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				defer cancel()
 				if errStop := s.wsGateway.Stop(ctx); errStop != nil {
 					log.Warnf("failed to reset websocket connections after ws-auth change %t -> %t: %v", oldEnabled, newEnabled, errStop)
@@ -527,6 +547,8 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.serverErr = make(chan error, 1)
+	// Service owns this server goroutine. The buffered channel lets it exit
+	// even when Shutdown stops the HTTP server before Start observes serverErr.
 	go func() {
 		if errStart := s.server.Start(); errStart != nil {
 			s.serverErr <- errStart
@@ -561,6 +583,7 @@ func (s *Service) Run(ctx context.Context) error {
 		if newCfg == nil {
 			return
 		}
+		internalusage.ApplyStoredRoutingConfig(newCfg)
 
 		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
 		normalizeStrategy := func(strategy string) string {
@@ -610,7 +633,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	watcherWrapper.SetConfig(s.cfg)
 
-	watcherCtx, watcherCancel := context.WithCancel(context.Background())
+	// Service owns the watcher context and cancels it from Shutdown or when the
+	// parent Start context is cancelled.
+	watcherCtx, watcherCancel := context.WithCancel(ctx)
 	s.watcherCancel = watcherCancel
 	if err = watcherWrapper.Start(watcherCtx); err != nil {
 		return fmt.Errorf("cliproxy: failed to start watcher: %w", err)
@@ -620,7 +645,9 @@ func (s *Service) Run(ctx context.Context) error {
 	// Prefer core auth manager auto refresh if available.
 	if s.coreManager != nil {
 		interval := 15 * time.Minute
-		s.coreManager.StartAutoRefresh(context.Background(), interval)
+		// Auto-refresh is a service-owned background loop and intentionally outlives
+		// any one request while remaining bound to the service lifetime.
+		s.coreManager.StartAutoRefresh(context.WithoutCancel(ctx), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
 
@@ -649,6 +676,8 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 	s.shutdownOnce.Do(func() {
 		if ctx == nil {
+			// Shutdown may be invoked from deferred cleanup after the main service
+			// context is already gone. Fall back to a root context so cleanup can finish.
 			ctx = context.Background()
 		}
 
@@ -676,6 +705,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		if s.authQueueStop != nil {
 			s.authQueueStop()
+			s.authQueueWG.Wait()
 			s.authQueueStop = nil
 		}
 
@@ -723,7 +753,7 @@ func (s *Service) ensureAuthDir() error {
 }
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
-func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
+func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	if a == nil || a.ID == "" {
 		return
 	}
@@ -793,8 +823,16 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = registry.GetAIStudioModels()
 		models = applyExcludedModels(models, excluded)
 	case "antigravity":
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		models = executor.FetchAntigravityModels(ctx, a, s.cfg)
+		fetchCtx := ctx
+		if fetchCtx == nil {
+			// Model fetch can be called from service-owned refresh paths that have no
+			// request scope; fall back to a service-owned root context in that case.
+			fetchCtx = context.Background()
+		}
+		// Model registration should not be aborted by unrelated caller cancellation
+		// once the service has committed to refreshing the registry.
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(fetchCtx), 15*time.Second)
+		models = executor.FetchAntigravityModels(fetchCtx, a, s.cfg)
 		cancel()
 		models = applyExcludedModels(models, excluded)
 	case "claude":
