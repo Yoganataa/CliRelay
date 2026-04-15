@@ -32,7 +32,7 @@ func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testi
 	}
 
 	_, maxWait := m.retrySettings()
-	wait, shouldRetry := m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 0, []string{"claude"}, model, maxWait)
+	wait, shouldRetry := m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 0, []string{"claude"}, model, maxWait, nil)
 	if shouldRetry {
 		t.Fatalf("expected shouldRetry=false for request_retry=0, got true (wait=%v)", wait)
 	}
@@ -42,7 +42,7 @@ func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testi
 		t.Fatalf("update auth: %v", errUpdate)
 	}
 
-	wait, shouldRetry = m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 0, []string{"claude"}, model, maxWait)
+	wait, shouldRetry = m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 0, []string{"claude"}, model, maxWait, nil)
 	if !shouldRetry {
 		t.Fatalf("expected shouldRetry=true for request_retry=1, got false")
 	}
@@ -50,9 +50,41 @@ func TestManager_ShouldRetryAfterError_RespectsAuthRequestRetryOverride(t *testi
 		t.Fatalf("expected wait > 0, got %v", wait)
 	}
 
-	_, shouldRetry = m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 1, []string{"claude"}, model, maxWait)
+	_, shouldRetry = m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 1, []string{"claude"}, model, maxWait, nil)
 	if shouldRetry {
 		t.Fatalf("expected shouldRetry=false on attempt=1 for request_retry=1, got true")
+	}
+}
+
+func TestManager_ShouldRetryAfterError_DisablesInternalRetryForGroupedRoute(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	m.SetRetryConfig(3, 30*time.Second)
+
+	model := "test-model"
+	next := time.Now().Add(5 * time.Second)
+	auth := &Auth{
+		ID:       "auth-1",
+		Provider: "claude",
+		ModelStates: map[string]*ModelState{
+			model: {
+				Unavailable:    true,
+				Status:         StatusError,
+				NextRetryAfter: next,
+			},
+		},
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	_, maxWait := m.retrySettings()
+	meta := map[string]any{"route_group": "pro"}
+	wait, shouldRetry := m.shouldRetryAfterError(&Error{HTTPStatus: 500, Message: "boom"}, 0, []string{"claude"}, model, maxWait, meta)
+	if shouldRetry {
+		t.Fatalf("expected shouldRetry=false for grouped route, got true (wait=%v)", wait)
+	}
+	if wait != 0 {
+		t.Fatalf("expected wait=0 for grouped route, got %v", wait)
 	}
 }
 

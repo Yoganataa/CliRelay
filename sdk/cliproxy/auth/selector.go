@@ -19,15 +19,25 @@ import (
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
 type RoundRobinSelector struct {
-	mu      sync.Mutex
-	cursors map[string]int
-	maxKeys int
+	mu       sync.Mutex
+	cursors  map[string]int
+	weighted map[string]*weightedCursorState
+	maxKeys  int
 }
 
 // FillFirstSelector selects the first available credential (deterministic ordering).
 // This "burns" one account before moving to the next, which can help stagger
 // rolling-window subscription caps (e.g. chat message limits).
-type FillFirstSelector struct{}
+type FillFirstSelector struct {
+	mu       sync.Mutex
+	weighted map[string]*weightedCursorState
+	maxKeys  int
+}
+
+type weightedCursorState struct {
+	current   map[string]int
+	tieCursor int
+}
 
 type blockReason int
 
@@ -211,7 +221,33 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 	return available, cooldownCount, earliest
 }
 
-func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]*Auth, error) {
+func routeGroupSelectionScope(meta map[string]any) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	switch raw := meta[cliproxyexecutor.RouteGroupMetadataKey].(type) {
+	case string:
+		return strings.TrimSpace(raw)
+	case []byte:
+		return strings.TrimSpace(string(raw))
+	default:
+		return ""
+	}
+}
+
+func isGroupedRouteSelection(meta map[string]any) bool {
+	return routeGroupSelectionScope(meta) != ""
+}
+
+func authSelectionWeight(auth *Auth) int {
+	weight := authPriority(auth)
+	if weight <= 0 {
+		return 1
+	}
+	return weight
+}
+
+func getAvailableAuths(auths []*Auth, provider, model string, now time.Time, includeAllPriorities bool) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
@@ -232,6 +268,23 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
 	}
 
+	if includeAllPriorities {
+		priorities := make([]int, 0, len(availableByPriority))
+		total := 0
+		for priority, items := range availableByPriority {
+			priorities = append(priorities, priority)
+			total += len(items)
+		}
+		sort.Ints(priorities)
+
+		available := make([]*Auth, 0, total)
+		for _, priority := range priorities {
+			available = append(available, availableByPriority[priority]...)
+		}
+		sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+		return available, nil
+	}
+
 	bestPriority := 0
 	found := false
 	for priority := range availableByPriority {
@@ -248,14 +301,86 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 	return available, nil
 }
 
+func ensureWeightedState(states map[string]*weightedCursorState, key string, limit int) map[string]*weightedCursorState {
+	if states == nil {
+		states = make(map[string]*weightedCursorState)
+	}
+	if _, ok := states[key]; !ok && len(states) >= limit {
+		states = make(map[string]*weightedCursorState)
+	}
+	if _, ok := states[key]; !ok {
+		states[key] = &weightedCursorState{current: make(map[string]int)}
+	}
+	return states
+}
+
+func weightedSelectionKey(provider, model string, opts cliproxyexecutor.Options) string {
+	return provider + ":" + canonicalModelKey(model) + ":group:" + routeGroupSelectionScope(opts.Metadata)
+}
+
+func pickWeightedAvailable(states map[string]*weightedCursorState, key string, available []*Auth) *Auth {
+	if len(available) == 0 {
+		return nil
+	}
+	state := states[key]
+	if state == nil {
+		state = &weightedCursorState{current: make(map[string]int)}
+		states[key] = state
+	}
+	if state.current == nil {
+		state.current = make(map[string]int)
+	}
+
+	activeIDs := make(map[string]struct{}, len(available))
+	totalWeight := 0
+	for _, auth := range available {
+		if auth == nil {
+			continue
+		}
+		activeIDs[auth.ID] = struct{}{}
+		totalWeight += authSelectionWeight(auth)
+		state.current[auth.ID] += authSelectionWeight(auth)
+	}
+	for id := range state.current {
+		if _, ok := activeIDs[id]; !ok {
+			delete(state.current, id)
+		}
+	}
+
+	start := 0
+	if len(available) > 0 {
+		start = state.tieCursor % len(available)
+	}
+	bestIndex := -1
+	bestScore := 0
+	for offset := 0; offset < len(available); offset++ {
+		index := (start + offset) % len(available)
+		score := state.current[available[index].ID]
+		if bestIndex == -1 || score > bestScore {
+			bestIndex = index
+			bestScore = score
+		}
+	}
+	if bestIndex < 0 {
+		bestIndex = 0
+	}
+	selected := available[bestIndex]
+	state.current[selected.ID] -= totalWeight
+	if state.tieCursor >= 2_147_483_640 {
+		state.tieCursor = 0
+	}
+	state.tieCursor++
+	return selected
+}
+
 // Pick selects the next available auth for the provider in a round-robin manner.
 // For gemini-cli virtual auths (identified by the gemini_virtual_parent attribute),
 // a two-level round-robin is used: first cycling across credential groups (parent
 // accounts), then cycling within each group's project auths.
 func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	_ = opts
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
+	groupedRoute := isGroupedRouteSelection(opts.Metadata)
+	available, err := getAvailableAuths(auths, provider, model, now, groupedRoute)
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +393,19 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	limit := s.maxKeys
 	if limit <= 0 {
 		limit = 4096
+	}
+	if groupedRoute {
+		if s.weighted == nil {
+			s.weighted = make(map[string]*weightedCursorState)
+		}
+		weightedKey := weightedSelectionKey(provider, model, opts)
+		s.weighted = ensureWeightedState(s.weighted, weightedKey, limit)
+		selected := pickWeightedAvailable(s.weighted, weightedKey, available)
+		s.mu.Unlock()
+		if selected == nil {
+			return nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+		}
+		return selected, nil
 	}
 
 	// Check if any available auth has gemini_virtual_parent attribute,
@@ -352,13 +490,31 @@ func groupByVirtualParent(auths []*Auth) (map[string][]*Auth, []string) {
 
 // Pick selects the first available auth for the provider in a deterministic manner.
 func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
-	_ = opts
 	now := time.Now()
-	available, err := getAvailableAuths(auths, provider, model, now)
+	groupedRoute := isGroupedRouteSelection(opts.Metadata)
+	available, err := getAvailableAuths(auths, provider, model, now, groupedRoute)
 	if err != nil {
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	if groupedRoute {
+		s.mu.Lock()
+		if s.weighted == nil {
+			s.weighted = make(map[string]*weightedCursorState)
+		}
+		limit := s.maxKeys
+		if limit <= 0 {
+			limit = 4096
+		}
+		weightedKey := weightedSelectionKey(provider, model, opts)
+		s.weighted = ensureWeightedState(s.weighted, weightedKey, limit)
+		selected := pickWeightedAvailable(s.weighted, weightedKey, available)
+		s.mu.Unlock()
+		if selected == nil {
+			return nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+		}
+		return selected, nil
+	}
 	return available[0], nil
 }
 

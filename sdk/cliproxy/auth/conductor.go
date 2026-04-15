@@ -564,7 +564,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 			return resp, nil
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, opts.Metadata)
 		if !shouldRetry {
 			break
 		}
@@ -595,7 +595,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 			return resp, nil
 		}
 		lastErr = errExec
-		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errExec, attempt, normalized, req.Model, maxWait, opts.Metadata)
 		if !shouldRetry {
 			break
 		}
@@ -626,7 +626,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			return result, nil
 		}
 		lastErr = errStream
-		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, normalized, req.Model, maxWait)
+		wait, shouldRetry := m.shouldRetryAfterError(errStream, attempt, normalized, req.Model, maxWait, opts.Metadata)
 		if !shouldRetry {
 			break
 		}
@@ -646,6 +646,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	}
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	singlePickRoute := isSinglePickRouteRequest(opts.Metadata)
 	tried := make(map[string]struct{})
 	var lastErr error
 	for {
@@ -688,6 +689,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if isRequestInvalidError(errExec) {
 				return cliproxyexecutor.Response{}, errExec
 			}
+			if singlePickRoute {
+				return cliproxyexecutor.Response{}, errExec
+			}
 			lastErr = errExec
 			continue
 		}
@@ -702,6 +706,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	}
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	singlePickRoute := isSinglePickRouteRequest(opts.Metadata)
 	tried := make(map[string]struct{})
 	var lastErr error
 	for {
@@ -744,6 +749,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if isRequestInvalidError(errExec) {
 				return cliproxyexecutor.Response{}, errExec
 			}
+			if singlePickRoute {
+				return cliproxyexecutor.Response{}, errExec
+			}
 			lastErr = errExec
 			continue
 		}
@@ -758,6 +766,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	}
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	singlePickRoute := isSinglePickRouteRequest(opts.Metadata)
 	tried := make(map[string]struct{})
 	var lastErr error
 	for {
@@ -796,6 +805,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			result.RetryAfter = retryAfterFromError(errStream)
 			m.MarkResult(execCtx, result)
 			if isRequestInvalidError(errStream) {
+				return nil, errStream
+			}
+			if singlePickRoute {
 				return nil, errStream
 			}
 			lastErr = errStream
@@ -876,6 +888,10 @@ func hasRequestedModelMetadata(meta map[string]any) bool {
 	default:
 		return false
 	}
+}
+
+func isSinglePickRouteRequest(meta map[string]any) bool {
+	return routeGroupFromMetadata(meta) != ""
 }
 
 func allowedChannelsFromMetadata(meta map[string]any) map[string]struct{} {
@@ -1257,11 +1273,14 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 	return minWait, found
 }
 
-func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration) (time.Duration, bool) {
+func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration, meta map[string]any) (time.Duration, bool) {
 	if err == nil {
 		return 0, false
 	}
 	if maxWait <= 0 {
+		return 0, false
+	}
+	if isSinglePickRouteRequest(meta) {
 		return 0, false
 	}
 	if status := statusCodeFromError(err); status == http.StatusOK {

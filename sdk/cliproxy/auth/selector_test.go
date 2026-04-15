@@ -87,6 +87,88 @@ func TestRoundRobinSelectorPick_PriorityBuckets(t *testing.T) {
 	}
 }
 
+func TestRoundRobinSelectorPick_GroupedRouteEqualPriorityRoundRobin(t *testing.T) {
+	t.Parallel()
+
+	selector := &RoundRobinSelector{}
+	auths := []*Auth{
+		{ID: "c", Attributes: map[string]string{"priority": "1"}},
+		{ID: "a", Attributes: map[string]string{"priority": "1"}},
+		{ID: "b", Attributes: map[string]string{"priority": "1"}},
+	}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "pro"},
+	}
+
+	want := []string{"a", "b", "c", "a", "b"}
+	for i, id := range want {
+		got, err := selector.Pick(context.Background(), "mixed", "", opts, auths)
+		if err != nil {
+			t.Fatalf("Pick() #%d error = %v", i, err)
+		}
+		if got == nil {
+			t.Fatalf("Pick() #%d auth = nil", i)
+		}
+		if got.ID != id {
+			t.Fatalf("Pick() #%d auth.ID = %q, want %q", i, got.ID, id)
+		}
+	}
+}
+
+func TestRoundRobinSelectorPick_GroupedRouteUsesLinearPriorityWeights(t *testing.T) {
+	t.Parallel()
+
+	selector := &RoundRobinSelector{}
+	auths := []*Auth{
+		{ID: "b", Attributes: map[string]string{"priority": "1"}},
+		{ID: "a", Attributes: map[string]string{"priority": "3"}},
+	}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "pro"},
+	}
+
+	want := []string{"a", "b", "a", "a", "a", "b", "a", "a"}
+	for i, id := range want {
+		got, err := selector.Pick(context.Background(), "mixed", "", opts, auths)
+		if err != nil {
+			t.Fatalf("Pick() #%d error = %v", i, err)
+		}
+		if got == nil {
+			t.Fatalf("Pick() #%d auth = nil", i)
+		}
+		if got.ID != id {
+			t.Fatalf("Pick() #%d auth.ID = %q, want %q", i, got.ID, id)
+		}
+	}
+}
+
+func TestFillFirstSelectorPick_GroupedRouteUsesWeightedScheduling(t *testing.T) {
+	t.Parallel()
+
+	selector := &FillFirstSelector{}
+	auths := []*Auth{
+		{ID: "b", Attributes: map[string]string{"priority": "1"}},
+		{ID: "a", Attributes: map[string]string{"priority": "3"}},
+	}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "pro"},
+	}
+
+	want := []string{"a", "b", "a", "a"}
+	for i, id := range want {
+		got, err := selector.Pick(context.Background(), "mixed", "", opts, auths)
+		if err != nil {
+			t.Fatalf("Pick() #%d error = %v", i, err)
+		}
+		if got == nil {
+			t.Fatalf("Pick() #%d auth = nil", i)
+		}
+		if got.ID != id {
+			t.Fatalf("Pick() #%d auth.ID = %q, want %q", i, got.ID, id)
+		}
+	}
+}
+
 func TestFillFirstSelectorPick_PriorityFallbackCooldown(t *testing.T) {
 	t.Parallel()
 
@@ -111,6 +193,43 @@ func TestFillFirstSelectorPick_PriorityFallbackCooldown(t *testing.T) {
 	low := &Auth{ID: "low", Attributes: map[string]string{"priority": "0"}}
 
 	got, err := selector.Pick(context.Background(), "mixed", model, cliproxyexecutor.Options{}, []*Auth{high, low})
+	if err != nil {
+		t.Fatalf("Pick() error = %v", err)
+	}
+	if got == nil {
+		t.Fatalf("Pick() auth = nil")
+	}
+	if got.ID != "low" {
+		t.Fatalf("Pick() auth.ID = %q, want %q", got.ID, "low")
+	}
+}
+
+func TestRoundRobinSelectorPick_GroupedRouteSkipsUnavailableAuths(t *testing.T) {
+	t.Parallel()
+
+	selector := &RoundRobinSelector{}
+	now := time.Now()
+	model := "test-model"
+	high := &Auth{
+		ID:         "high",
+		Attributes: map[string]string{"priority": "10"},
+		ModelStates: map[string]*ModelState{
+			model: {
+				Status:         StatusActive,
+				Unavailable:    true,
+				NextRetryAfter: now.Add(30 * time.Minute),
+				Quota: QuotaState{
+					Exceeded: true,
+				},
+			},
+		},
+	}
+	low := &Auth{ID: "low", Attributes: map[string]string{"priority": "1"}}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{cliproxyexecutor.RouteGroupMetadataKey: "pro"},
+	}
+
+	got, err := selector.Pick(context.Background(), "mixed", model, opts, []*Auth{high, low})
 	if err != nil {
 		t.Fatalf("Pick() error = %v", err)
 	}

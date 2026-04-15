@@ -3,10 +3,14 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -500,6 +504,84 @@ func TestExecuteStreamWithAuthManager_PinnedAuthKeepsSameUpstream(t *testing.T) 
 		if authID != "auth1" {
 			t.Fatalf("expected all attempts on auth1, got sequence %v", authIDs)
 		}
+	}
+}
+
+func TestExecuteStreamWithAuthManager_GroupedRouteDoesNotBootstrapRetry(t *testing.T) {
+	executor := &authAwareStreamExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	auth1 := &coreauth.Auth{
+		ID:       "auth1",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Prefix:   "pro",
+		Metadata: map[string]any{"email": "test1@example.com"},
+	}
+	if _, err := manager.Register(context.Background(), auth1); err != nil {
+		t.Fatalf("manager.Register(auth1): %v", err)
+	}
+
+	auth2 := &coreauth.Auth{
+		ID:       "auth2",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Prefix:   "pro",
+		Metadata: map[string]any{"email": "test2@example.com"},
+	}
+	if _, err := manager.Register(context.Background(), auth2); err != nil {
+		t.Fatalf("manager.Register(auth2): %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(auth1.ID, auth1.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	registry.GetGlobalRegistry().RegisterClient(auth2.ID, auth2.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth1.ID)
+		registry.GetGlobalRegistry().UnregisterClient(auth2.ID)
+	})
+
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, "/pro/v1/chat/completions", nil)
+	ginCtx.Request = req
+	ginCtx.Set(routing.GinPathRouteContextKey, &routing.PathRouteContext{RoutePath: "/pro", Group: "pro", Fallback: "none"})
+	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
+
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
+		Streaming: sdkconfig.StreamingConfig{
+			BootstrapRetries: 1,
+		},
+	}, manager)
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(ctx, "openai", "test-model", []byte(`{"model":"test-model"}`), "")
+	if dataChan == nil || errChan == nil {
+		t.Fatalf("expected non-nil channels")
+	}
+
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+
+	var gotErr error
+	for msg := range errChan {
+		if msg != nil && msg.Error != nil {
+			gotErr = msg.Error
+		}
+	}
+
+	if len(got) != 0 {
+		t.Fatalf("expected empty payload, got %q", string(got))
+	}
+	if gotErr == nil {
+		t.Fatalf("expected terminal error, got nil")
+	}
+	authIDs := executor.AuthIDs()
+	if len(authIDs) != 1 {
+		t.Fatalf("expected exactly 1 upstream attempt, got %v", authIDs)
+	}
+	if authIDs[0] != "auth1" {
+		t.Fatalf("expected grouped route to stop on auth1, got %v", authIDs)
 	}
 }
 

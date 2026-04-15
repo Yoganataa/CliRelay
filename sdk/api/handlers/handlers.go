@@ -274,6 +274,20 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	return meta
 }
 
+func isGroupedRouteRequestMeta(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	switch raw := meta[coreexecutor.RouteGroupMetadataKey].(type) {
+	case string:
+		return strings.TrimSpace(raw) != ""
+	case []byte:
+		return strings.TrimSpace(string(raw)) != ""
+	default:
+		return false
+	}
+}
+
 func pinnedAuthIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -690,6 +704,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = normalizedModel
+	groupedRoute := isGroupedRouteRequestMeta(reqMeta)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -807,19 +822,17 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 					streamErr := chunk.Err
 					// Safe bootstrap recovery: if the upstream fails before any payload bytes are sent,
 					// retry a few times (to allow auth rotation / transient recovery) and then attempt model fallback.
-					if !sentPayload {
-						if bootstrapRetries < maxBootstrapRetries && bootstrapEligible(streamErr) {
-							bootstrapRetries++
-							retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
-							if retryErr == nil {
-								if passthroughHeadersEnabled {
-									replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
-								}
-								chunks = retryResult.Chunks
-								continue outer
+					if !sentPayload && !groupedRoute && bootstrapRetries < maxBootstrapRetries && bootstrapEligible(streamErr) {
+						bootstrapRetries++
+						retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+						if retryErr == nil {
+							if passthroughHeadersEnabled {
+								replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
 							}
-							streamErr = retryErr
+							chunks = retryResult.Chunks
+							continue outer
 						}
+						streamErr = retryErr
 					}
 
 					status := http.StatusInternalServerError
