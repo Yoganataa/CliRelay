@@ -56,26 +56,46 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /opt/clirelay2
+            SERVICE_BIN="$(systemctl show -p ExecStart --value clirelay2 | sed -nE 's/.*path=([^ ;]+).*/\1/p' | head -n1)"
+            if [ -z "$SERVICE_BIN" ]; then
+              if [ -x /opt/clirelay2/clirelay2 ]; then
+                SERVICE_BIN="/opt/clirelay2/clirelay2"
+              else
+                SERVICE_BIN="/opt/clirelay2/cli-proxy-api"
+              fi
+            fi
+            SERVICE_DIR="$(dirname "$SERVICE_BIN")"
+            SERVICE_NAME="$(basename "$SERVICE_BIN")"
+            TEMP_BIN="/opt/clirelay2/cli-proxy-api-new"
+            if [ ! -f "$TEMP_BIN" ]; then
+              echo "uploaded temp binary not found: $TEMP_BIN"
+              exit 1
+            fi
+            cd "$SERVICE_DIR"
+            echo "Service binary: $SERVICE_BIN"
             # Stop via systemd
             systemctl stop clirelay2 2>/dev/null || true
             sleep 1
             # Kill any stray processes
-            PIDS=$(pgrep -f "^/opt/clirelay2/clirelay2" 2>/dev/null) || true
+            PIDS=$(pgrep -f "^${SERVICE_BIN}$" 2>/dev/null) || true
             if [ -n "$PIDS" ]; then
               kill $PIDS 2>/dev/null || true
               sleep 2
             fi
             # Backup current binary
-            if [ -f cli-proxy-api ]; then
-              cp cli-proxy-api "cli-proxy-api.bak.$(date +%Y%m%d_%H%M%S)"
+            if [ -f "$SERVICE_NAME" ]; then
+              cp "$SERVICE_NAME" "${SERVICE_NAME}.bak.$(date +%Y%m%d_%H%M%S)"
             fi
             # Swap in new binary
-            mv cli-proxy-api-new cli-proxy-api
-            chmod +x cli-proxy-api
+            mv "$TEMP_BIN" "$SERVICE_NAME"
+            chmod +x "$SERVICE_NAME"
             # Clean up old backups, keep last 3
-            ls -1t cli-proxy-api.bak.* 2>/dev/null | tail -n +4 | xargs -r rm -f
+            ls -1t "${SERVICE_NAME}.bak."* 2>/dev/null | tail -n +4 | xargs -r rm -f
             # Start service
             systemctl start clirelay2
             sleep 3
             systemctl is-active clirelay2
+            if ! grep -a -q "${{ github.sha }}" "$SERVICE_BIN"; then
+              echo "deployed binary does not contain expected commit SHA"
+              exit 1
+            fi
