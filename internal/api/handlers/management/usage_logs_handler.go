@@ -14,9 +14,10 @@ import (
 const authFileGroupTrendCacheTTL = 30 * time.Second
 
 type authFileGroupTrendResponse struct {
-	Days   int                     `json:"days"`
-	Group  string                  `json:"group"`
-	Points []usage.DailyCountPoint `json:"points"`
+	Days        int                     `json:"days"`
+	Group       string                  `json:"group"`
+	Points      []usage.DailyCountPoint `json:"points"`
+	QuotaPoints []usage.DailyQuotaPoint `json:"quota_points"`
 }
 
 // GetUsageLogs returns paginated, filterable request log entries from SQLite.
@@ -645,7 +646,15 @@ func (h *Handler) GetAuthFileGroupTrend(c *gin.Context) {
 	if points == nil {
 		points = []usage.DailyCountPoint{}
 	}
-	payload := authFileGroupTrendResponse{Days: days, Group: group, Points: points}
+	quotaPoints, err := usage.QueryDailyQuotaByAuthIndexes(authIndexes, "code_week", days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if quotaPoints == nil {
+		quotaPoints = []usage.DailyQuotaPoint{}
+	}
+	payload := authFileGroupTrendResponse{Days: days, Group: group, Points: points, QuotaPoints: quotaPoints}
 	h.setTrendCache(cacheKey, payload)
 	c.JSON(http.StatusOK, payload)
 }
@@ -705,4 +714,13 @@ func (h *Handler) setTrendCache(key string, payload authFileGroupTrendResponse) 
 		}
 	}
 	h.trendCache[key] = trendCacheEntry{expiresAt: now.Add(authFileGroupTrendCacheTTL), payload: payload}
+}
+
+func (h *Handler) clearTrendCache() {
+	if h == nil {
+		return
+	}
+	h.trendCacheMu.Lock()
+	defer h.trendCacheMu.Unlock()
+	h.trendCache = make(map[string]trendCacheEntry)
 }

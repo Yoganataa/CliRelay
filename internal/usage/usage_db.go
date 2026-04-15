@@ -75,6 +75,12 @@ type DailyCountPoint struct {
 	Requests int64  `json:"requests"`
 }
 
+type DailyQuotaPoint struct {
+	Date    string   `json:"date"`
+	Percent *float64 `json:"percent"`
+	Samples int64    `json:"samples"`
+}
+
 var (
 	usageDB     *sql.DB
 	usageDBMu   sync.Mutex
@@ -118,6 +124,19 @@ CREATE INDEX IF NOT EXISTS idx_logs_model ON request_logs(model);
 CREATE INDEX IF NOT EXISTS idx_logs_failed ON request_logs(failed);
 CREATE INDEX IF NOT EXISTS idx_logs_auth_index ON request_logs(auth_index);
 CREATE INDEX IF NOT EXISTS idx_log_content_timestamp ON request_log_content(timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS auth_file_quota_snapshots (
+  date_key      TEXT NOT NULL,
+  auth_index    TEXT NOT NULL,
+  provider      TEXT NOT NULL DEFAULT '',
+  quota_key     TEXT NOT NULL,
+  percent       REAL,
+  recorded_at   DATETIME NOT NULL,
+  PRIMARY KEY (date_key, auth_index, quota_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_quota_snapshots_date ON auth_file_quota_snapshots(date_key);
+CREATE INDEX IF NOT EXISTS idx_quota_snapshots_auth ON auth_file_quota_snapshots(auth_index);
 `
 
 // migrateContentColumns adds input_content/output_content columns to an
@@ -618,6 +637,15 @@ func cutoffStartUTCAt(now time.Time, days int) time.Time {
 // dashboard and other callers can reuse the same time-range semantics.
 func CutoffStartUTC(days int) time.Time {
 	return cutoffStartUTCAt(time.Now(), days)
+}
+
+func localDayKeyAt(t time.Time) string {
+	loc := getUsageLocation()
+	return t.In(loc).Format("2006-01-02")
+}
+
+func cutoffDayKey(days int) string {
+	return localDayKeyAt(CutoffStartUTC(days))
 }
 
 func buildWhereClause(params LogQueryParams) (string, []interface{}) {
@@ -1227,6 +1255,148 @@ func QueryDailyCallsByAuthIndexes(authIndexes []string, days int) ([]DailyCountP
 		var point DailyCountPoint
 		if err := rows.Scan(&point.Date, &point.Requests); err != nil {
 			return nil, fmt.Errorf("usage: daily calls by auth indexes scan: %w", err)
+		}
+		result = append(result, point)
+	}
+	return result, rows.Err()
+}
+
+func RecordDailyQuotaSnapshot(authIndex, provider string, quotas map[string]*float64) error {
+	db := getDB()
+	if db == nil {
+		return nil
+	}
+
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" || len(quotas) == 0 {
+		return nil
+	}
+	provider = strings.TrimSpace(provider)
+	now := time.Now()
+	dateKey := localDayKeyAt(now)
+	recordedAt := now.UTC().Format(time.RFC3339Nano)
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("usage: quota snapshot begin: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO auth_file_quota_snapshots (date_key, auth_index, provider, quota_key, percent, recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(date_key, auth_index, quota_key) DO UPDATE SET
+			provider = excluded.provider,
+			percent = excluded.percent,
+			recorded_at = excluded.recorded_at
+	`)
+	if err != nil {
+		return fmt.Errorf("usage: quota snapshot prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for key, rawPercent := range quotas {
+		quotaKey := strings.TrimSpace(key)
+		if quotaKey == "" {
+			continue
+		}
+		var value any
+		if rawPercent == nil {
+			value = nil
+		} else {
+			percent := *rawPercent
+			if percent < 0 {
+				percent = 0
+			}
+			if percent > 100 {
+				percent = 100
+			}
+			value = percent
+		}
+		if _, err = stmt.Exec(dateKey, authIndex, provider, quotaKey, value, recordedAt); err != nil {
+			return fmt.Errorf("usage: quota snapshot upsert: %w", err)
+		}
+	}
+
+	retentionCutoff := cutoffDayKey(7)
+	if _, err = tx.Exec(`DELETE FROM auth_file_quota_snapshots WHERE date_key < ?`, retentionCutoff); err != nil {
+		return fmt.Errorf("usage: quota snapshot prune: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("usage: quota snapshot commit: %w", err)
+	}
+	return nil
+}
+
+func QueryDailyQuotaByAuthIndexes(authIndexes []string, quotaKey string, days int) ([]DailyQuotaPoint, error) {
+	db := getDB()
+	if db == nil {
+		return []DailyQuotaPoint{}, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+	if len(authIndexes) == 0 {
+		return []DailyQuotaPoint{}, nil
+	}
+	quotaKey = strings.TrimSpace(quotaKey)
+	if quotaKey == "" {
+		return []DailyQuotaPoint{}, nil
+	}
+
+	seen := make(map[string]struct{}, len(authIndexes))
+	normalized := make([]string, 0, len(authIndexes))
+	for _, idx := range authIndexes {
+		idx = strings.TrimSpace(idx)
+		if idx == "" {
+			continue
+		}
+		if _, ok := seen[idx]; ok {
+			continue
+		}
+		seen[idx] = struct{}{}
+		normalized = append(normalized, idx)
+	}
+	if len(normalized) == 0 {
+		return []DailyQuotaPoint{}, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(normalized)), ",")
+	args := make([]interface{}, 0, len(normalized)+2)
+	args = append(args, cutoffDayKey(days), quotaKey)
+	for _, idx := range normalized {
+		args = append(args, idx)
+	}
+
+	q := fmt.Sprintf(`
+		SELECT date_key, AVG(percent) AS avg_percent, COUNT(percent) AS samples
+		FROM auth_file_quota_snapshots
+		WHERE date_key >= ? AND quota_key = ? AND auth_index IN (%s) AND percent IS NOT NULL
+		GROUP BY date_key
+		ORDER BY date_key ASC
+	`, placeholders)
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage: daily quota by auth indexes query: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]DailyQuotaPoint, 0, days)
+	for rows.Next() {
+		var point DailyQuotaPoint
+		var percent sql.NullFloat64
+		if err := rows.Scan(&point.Date, &percent, &point.Samples); err != nil {
+			return nil, fmt.Errorf("usage: daily quota by auth indexes scan: %w", err)
+		}
+		if percent.Valid {
+			v := percent.Float64
+			point.Percent = &v
 		}
 		result = append(result, point)
 	}

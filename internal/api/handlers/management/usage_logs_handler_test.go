@@ -199,6 +199,14 @@ func TestGetAuthFileGroupTrendAggregatesByProvider(t *testing.T) {
 		"", "", "kimi-k2.5", "kimi-source", "Kimi", otherAuth.Index,
 		false, now, 1, 1, usage.TokenStats{TotalTokens: 1}, "", "",
 	)
+	codexWeekly := 70.0
+	kimiWeekly := 30.0
+	if err := usage.RecordDailyQuotaSnapshot(codexAuth.Index, "codex", map[string]*float64{"code_week": &codexWeekly}); err != nil {
+		t.Fatalf("record codex quota snapshot: %v", err)
+	}
+	if err := usage.RecordDailyQuotaSnapshot(otherAuth.Index, "kimi", map[string]*float64{"code_week": &kimiWeekly}); err != nil {
+		t.Fatalf("record kimi quota snapshot: %v", err)
+	}
 
 	h := &Handler{cfg: &config.Config{}, authManager: manager}
 
@@ -218,6 +226,11 @@ func TestGetAuthFileGroupTrendAggregatesByProvider(t *testing.T) {
 			Date     string `json:"date"`
 			Requests int64  `json:"requests"`
 		} `json:"points"`
+		QuotaPoints []struct {
+			Date    string   `json:"date"`
+			Percent *float64 `json:"percent"`
+			Samples int64    `json:"samples"`
+		} `json:"quota_points"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
@@ -231,6 +244,15 @@ func TestGetAuthFileGroupTrendAggregatesByProvider(t *testing.T) {
 	}
 	if total != 1 {
 		t.Fatalf("total codex requests = %d, want 1", total)
+	}
+	if len(payload.QuotaPoints) != 1 {
+		t.Fatalf("quota point count = %d, want 1", len(payload.QuotaPoints))
+	}
+	if payload.QuotaPoints[0].Percent == nil || *payload.QuotaPoints[0].Percent != 70 {
+		t.Fatalf("codex quota percent = %v, want 70", payload.QuotaPoints[0].Percent)
+	}
+	if payload.QuotaPoints[0].Samples != 1 {
+		t.Fatalf("codex quota samples = %d, want 1", payload.QuotaPoints[0].Samples)
 	}
 }
 
