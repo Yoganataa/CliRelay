@@ -355,6 +355,13 @@ auto-update:
   enabled: false
 ```
 
+Update checks follow the stable `main` Docker image by default. To test dev builds, set `channel: dev` in `config.yaml` or choose **Development (dev)** from **Update Channel** in the Config page:
+
+```yaml
+auto-update:
+  channel: dev
+```
+
 ### 🗄️ Enabling Data Persistence
 
 By default, API usage logs are stored in SQLite for persistence. For additional backup:

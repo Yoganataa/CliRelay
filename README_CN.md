@@ -355,6 +355,13 @@ auto-update:
   enabled: false
 ```
 
+更新检查默认跟随稳定的 `main` Docker 镜像。如果你想测试 dev 构建，可以在 `config.yaml` 中设置 `channel: dev`，或在配置页的 **更新渠道** 中选择 **开发版（dev）**：
+
+```yaml
+auto-update:
+  channel: dev
+```
+
 ### 🗄️ 开启数据持久化
 
 默认情况下，API 使用日志存储在 SQLite 中以实现持久化。如需额外备份：

@@ -44,8 +44,8 @@ func TestLoadConfigDefaultsAutoUpdateEnabled(t *testing.T) {
 	if !cfg.AutoUpdate.Enabled {
 		t.Fatalf("AutoUpdate.Enabled = false, want true by default")
 	}
-	if cfg.AutoUpdate.Channel != DefaultAutoUpdateChannel {
-		t.Fatalf("AutoUpdate.Channel = %q, want %q", cfg.AutoUpdate.Channel, DefaultAutoUpdateChannel)
+	if cfg.AutoUpdate.Channel != "main" {
+		t.Fatalf("AutoUpdate.Channel = %q, want main", cfg.AutoUpdate.Channel)
 	}
 	if cfg.AutoUpdate.Repository != DefaultAutoUpdateRepository {
 		t.Fatalf("AutoUpdate.Repository = %q, want %q", cfg.AutoUpdate.Repository, DefaultAutoUpdateRepository)

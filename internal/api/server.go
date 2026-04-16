@@ -618,6 +618,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/auto-update/enabled", s.mgmt.GetAutoUpdateEnabled)
 		mgmt.PUT("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)
 		mgmt.PATCH("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)
+		mgmt.GET("/auto-update/channel", s.mgmt.GetAutoUpdateChannel)
+		mgmt.PUT("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
+		mgmt.PATCH("/auto-update/channel", s.mgmt.PutAutoUpdateChannel)
 
 		mgmt.GET("/debug", s.mgmt.GetDebug)
 		mgmt.PUT("/debug", s.mgmt.PutDebug)

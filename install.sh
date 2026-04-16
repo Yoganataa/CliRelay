@@ -467,7 +467,7 @@ remote-management:
 
 auto-update:
   enabled: true
-  channel: auto
+  channel: main
   repository: https://github.com/kittors/CliRelay
   docker-image: ghcr.io/kittors/clirelay
   updater-url: http://clirelay-updater:8320

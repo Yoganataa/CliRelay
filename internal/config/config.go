@@ -21,7 +21,7 @@ import (
 const (
 	DefaultPanelGitHubRepository = "https://github.com/kittors/codeProxy"
 	DefaultPprofAddr             = "127.0.0.1:8316"
-	DefaultAutoUpdateChannel     = "auto"
+	DefaultAutoUpdateChannel     = "main"
 	DefaultAutoUpdateRepository  = "https://github.com/kittors/CliRelay"
 	DefaultAutoUpdateDockerImage = "ghcr.io/kittors/clirelay"
 	DefaultAutoUpdateUpdaterURL  = "http://clirelay-updater:8320"
@@ -873,9 +873,9 @@ func (cfg *Config) SanitizeAutoUpdate() {
 	}
 	channel := strings.ToLower(strings.TrimSpace(cfg.AutoUpdate.Channel))
 	switch channel {
-	case "", "auto":
+	case "":
 		cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel
-	case "main", "dev":
+	case "main", "dev", "auto":
 		cfg.AutoUpdate.Channel = channel
 	default:
 		cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel

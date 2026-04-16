@@ -1,6 +1,16 @@
 package management
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+)
 
 func TestInferAutoUpdateChannel(t *testing.T) {
 	tests := []struct {
@@ -54,5 +64,40 @@ func TestDockerTagForChannel(t *testing.T) {
 	}
 	if got := dockerTagForChannel("main", "a35756e"); got != "latest" {
 		t.Fatalf("dockerTagForChannel(main) = %q, want latest", got)
+	}
+}
+
+func TestAutoUpdateChannelEndpoints(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{}
+	cfg.AutoUpdate.Channel = config.DefaultAutoUpdateChannel
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	handler := NewHandler(cfg, configPath, nil)
+
+	router := gin.New()
+	router.GET("/channel", handler.GetAutoUpdateChannel)
+	router.PUT("/channel", handler.PutAutoUpdateChannel)
+
+	getRec := httptest.NewRecorder()
+	router.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/channel", nil))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, body=%s", getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"channel":"main"`) {
+		t.Fatalf("GET body = %s, want channel main", getRec.Body.String())
+	}
+
+	putRec := httptest.NewRecorder()
+	putReq := httptest.NewRequest(http.MethodPut, "/channel", strings.NewReader(`{"value":"dev"}`))
+	putReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(putRec, putReq)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body=%s", putRec.Code, putRec.Body.String())
+	}
+	if cfg.AutoUpdate.Channel != "dev" {
+		t.Fatalf("AutoUpdate.Channel = %q, want dev", cfg.AutoUpdate.Channel)
 	}
 }

@@ -65,6 +65,32 @@ func (h *Handler) PutAutoUpdateEnabled(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.AutoUpdate.Enabled = v })
 }
 
+func (h *Handler) GetAutoUpdateChannel(c *gin.Context) {
+	channel := config.DefaultAutoUpdateChannel
+	if h != nil && h.cfg != nil {
+		h.cfg.SanitizeAutoUpdate()
+		channel = h.cfg.AutoUpdate.Channel
+	}
+	c.JSON(http.StatusOK, gin.H{"channel": channel})
+}
+
+func (h *Handler) PutAutoUpdateChannel(c *gin.Context) {
+	var body struct {
+		Value *string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	channel := normalizeAutoUpdateChannel(*body.Value)
+	if channel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid auto update channel"})
+		return
+	}
+	h.cfg.AutoUpdate.Channel = channel
+	h.persist(c)
+}
+
 func (h *Handler) CheckUpdate(c *gin.Context) {
 	resp, err := h.buildUpdateCheck(c.Request.Context())
 	if err != nil {
@@ -142,7 +168,7 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 	cfg.SanitizeAutoUpdate()
 
 	channel := cfg.AutoUpdate.Channel
-	if channel == "" || channel == config.DefaultAutoUpdateChannel {
+	if channel == "auto" {
 		channel = inferAutoUpdateChannel(buildinfo.Version, os.Getenv(autoUpdateChannelEnv))
 	}
 	repo := normalizeGitHubRepository(cfg.AutoUpdate.Repository)
@@ -196,6 +222,15 @@ func (h *Handler) githubClient() *http.Client {
 		}
 	}
 	return client
+}
+
+func normalizeAutoUpdateChannel(channel string) string {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "main", "dev", "auto":
+		return strings.ToLower(strings.TrimSpace(channel))
+	default:
+		return ""
+	}
 }
 
 func fetchBranchCommit(ctx context.Context, client *http.Client, repo string, channel string) (branchCommitInfo, error) {

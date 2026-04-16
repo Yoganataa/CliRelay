@@ -63,7 +63,8 @@ remote-management:
 # Docker Compose deployment path; non-Docker deployments can disable this.
 auto-update:
   enabled: true
-  channel: auto
+  # main is the default stable update channel; use dev to follow dev images.
+  channel: main
   repository: https://github.com/kittors/CliRelay
   docker-image: ghcr.io/kittors/clirelay
   updater-url: http://clirelay-updater:8320
