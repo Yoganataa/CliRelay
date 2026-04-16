@@ -180,10 +180,6 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 	}
 
 	release, releaseErr := fetchLatestReleaseInfo(ctx, client, repo)
-	latestVersion := strings.TrimSpace(release.TagName)
-	if latestVersion == "" {
-		latestVersion = strings.TrimSpace(release.Name)
-	}
 	releaseNotes := strings.TrimSpace(release.Body)
 	if releaseErr != nil {
 		releaseNotes = ""
@@ -191,11 +187,11 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 
 	resp := &updateCheckResponse{
 		Enabled:          cfg.AutoUpdate.Enabled,
-		CurrentVersion:   buildinfo.Version,
+		CurrentVersion:   currentUpdateDisplayVersion(buildinfo.Version),
 		CurrentCommit:    buildinfo.Commit,
 		BuildDate:        buildinfo.BuildDate,
 		TargetChannel:    channel,
-		LatestVersion:    latestVersion,
+		LatestVersion:    latestUpdateDisplayVersion(channel),
 		LatestCommit:     strings.TrimSpace(branch.SHA),
 		LatestCommitURL:  strings.TrimSpace(branch.HTMLURL),
 		DockerImage:      cfg.AutoUpdate.DockerImage,
@@ -286,6 +282,26 @@ func inferAutoUpdateChannel(version string, envChannel string) string {
 	}
 	lowered := strings.ToLower(strings.TrimSpace(version))
 	if strings.HasPrefix(lowered, "dev-") || strings.Contains(lowered, "-dev") || lowered == "dev" {
+		return "dev"
+	}
+	return "main"
+}
+
+func currentUpdateDisplayVersion(version string) string {
+	trimmed := strings.TrimSpace(version)
+	lowered := strings.ToLower(trimmed)
+	if strings.HasPrefix(lowered, "main-") || lowered == "main" {
+		return "main"
+	}
+	if strings.HasPrefix(lowered, "dev-") || lowered == "dev" {
+		return "dev"
+	}
+	return trimmed
+}
+
+func latestUpdateDisplayVersion(channel string) string {
+	normalized := normalizeAutoUpdateChannel(channel)
+	if normalized == "dev" {
 		return "dev"
 	}
 	return "main"

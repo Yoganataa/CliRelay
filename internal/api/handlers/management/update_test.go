@@ -67,6 +67,21 @@ func TestDockerTagForChannel(t *testing.T) {
 	}
 }
 
+func TestUpdateDisplayVersionsUseDockerChannelNames(t *testing.T) {
+	if got := currentUpdateDisplayVersion("dev-d5c2482"); got != "dev" {
+		t.Fatalf("currentUpdateDisplayVersion(dev-d5c2482) = %q, want dev", got)
+	}
+	if got := currentUpdateDisplayVersion("main-d5c2482"); got != "main" {
+		t.Fatalf("currentUpdateDisplayVersion(main-d5c2482) = %q, want main", got)
+	}
+	if got := latestUpdateDisplayVersion("main"); got != "main" {
+		t.Fatalf("latestUpdateDisplayVersion(main) = %q, want main", got)
+	}
+	if got := latestUpdateDisplayVersion("dev"); got != "dev" {
+		t.Fatalf("latestUpdateDisplayVersion(dev) = %q, want dev", got)
+	}
+}
+
 func TestAutoUpdateChannelEndpoints(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{}

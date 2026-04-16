@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -127,6 +128,11 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), updateCommandTimeout)
 		defer cancel()
+		if err := persistRequestedImage(s.envFile, req.Image, req.Tag); err != nil {
+			log.Printf("compose update failed: %v", err)
+			s.setStatus("failed", err.Error())
+			return
+		}
 		if err := s.runner(ctx, s.composeFile, s.envFile, service); err != nil {
 			log.Printf("compose update failed: %v", err)
 			s.setStatus("failed", err.Error())
@@ -136,6 +142,71 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted", "service": service})
+}
+
+func persistRequestedImage(envFile string, image string, tag string) error {
+	imageRef := requestedImageRef(image, tag)
+	if imageRef == "" || strings.TrimSpace(envFile) == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(envFile)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	line := "CLI_PROXY_IMAGE=" + imageRef
+	lines := splitEnvLines(string(data))
+	replaced := false
+	for i, existing := range lines {
+		if strings.HasPrefix(existing, "CLI_PROXY_IMAGE=") {
+			lines[i] = line
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		lines = append(lines, line)
+	}
+	content := strings.Join(lines, "\n") + "\n"
+	return os.WriteFile(envFile, []byte(content), 0o600)
+}
+
+func requestedImageRef(image string, tag string) string {
+	cleanImage := strings.TrimSpace(image)
+	cleanTag := strings.TrimSpace(tag)
+	if cleanImage == "" || cleanTag == "" {
+		return ""
+	}
+	if !isSafeImagePart(cleanImage) || !isSafeImagePart(cleanTag) {
+		return ""
+	}
+	return fmt.Sprintf("%s:%s", cleanImage, cleanTag)
+}
+
+func splitEnvLines(content string) []string {
+	trimmed := strings.TrimRight(content, "\r\n")
+	if trimmed == "" {
+		return nil
+	}
+	raw := strings.Split(trimmed, "\n")
+	lines := raw[:0]
+	for _, line := range raw {
+		lines = append(lines, strings.TrimRight(line, "\r"))
+	}
+	return lines
+}
+
+func isSafeImagePart(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r <= ' ' || r == '\'' || r == '"' || r == '\\' || r == '`' || r == '$' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *updaterServer) authorized(r *http.Request) bool {
