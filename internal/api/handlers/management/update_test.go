@@ -67,18 +67,18 @@ func TestDockerTagForChannel(t *testing.T) {
 	}
 }
 
-func TestUpdateDisplayVersionsUseDockerChannelNames(t *testing.T) {
-	if got := currentUpdateDisplayVersion("dev-d5c2482"); got != "dev" {
-		t.Fatalf("currentUpdateDisplayVersion(dev-d5c2482) = %q, want dev", got)
+func TestUpdateDisplayVersionsIncludeConcreteCommit(t *testing.T) {
+	if got := currentUpdateDisplayVersion("dev-d5c2482"); got != "dev-d5c2482" {
+		t.Fatalf("currentUpdateDisplayVersion(dev-d5c2482) = %q, want dev-d5c2482", got)
 	}
-	if got := currentUpdateDisplayVersion("main-d5c2482"); got != "main" {
-		t.Fatalf("currentUpdateDisplayVersion(main-d5c2482) = %q, want main", got)
+	if got := currentUpdateDisplayVersion("main-d5c2482"); got != "main-d5c2482" {
+		t.Fatalf("currentUpdateDisplayVersion(main-d5c2482) = %q, want main-d5c2482", got)
 	}
-	if got := latestUpdateDisplayVersion("main"); got != "main" {
-		t.Fatalf("latestUpdateDisplayVersion(main) = %q, want main", got)
+	if got := latestUpdateDisplayVersion("main", "de96948c21de3f0a47a8e1e08cb1b859c73069ba"); got != "main-de96948" {
+		t.Fatalf("latestUpdateDisplayVersion(main) = %q, want main-de96948", got)
 	}
-	if got := latestUpdateDisplayVersion("dev"); got != "dev" {
-		t.Fatalf("latestUpdateDisplayVersion(dev) = %q, want dev", got)
+	if got := latestUpdateDisplayVersion("dev", "3758025c21de3f0a47a8e1e08cb1b859c73069ba"); got != "dev-3758025" {
+		t.Fatalf("latestUpdateDisplayVersion(dev) = %q, want dev-3758025", got)
 	}
 }
 

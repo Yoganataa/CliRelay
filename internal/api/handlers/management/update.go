@@ -191,7 +191,7 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 		CurrentCommit:    buildinfo.Commit,
 		BuildDate:        buildinfo.BuildDate,
 		TargetChannel:    channel,
-		LatestVersion:    latestUpdateDisplayVersion(channel),
+		LatestVersion:    latestUpdateDisplayVersion(channel, branch.SHA),
 		LatestCommit:     strings.TrimSpace(branch.SHA),
 		LatestCommitURL:  strings.TrimSpace(branch.HTMLURL),
 		DockerImage:      cfg.AutoUpdate.DockerImage,
@@ -289,22 +289,31 @@ func inferAutoUpdateChannel(version string, envChannel string) string {
 
 func currentUpdateDisplayVersion(version string) string {
 	trimmed := strings.TrimSpace(version)
-	lowered := strings.ToLower(trimmed)
-	if strings.HasPrefix(lowered, "main-") || lowered == "main" {
-		return "main"
-	}
-	if strings.HasPrefix(lowered, "dev-") || lowered == "dev" {
-		return "dev"
-	}
 	return trimmed
 }
 
-func latestUpdateDisplayVersion(channel string) string {
+func latestUpdateDisplayVersion(channel string, commit string) string {
 	normalized := normalizeAutoUpdateChannel(channel)
 	if normalized == "dev" {
-		return "dev"
+		return joinChannelCommit("dev", commit)
 	}
-	return "main"
+	return joinChannelCommit("main", commit)
+}
+
+func joinChannelCommit(channel string, commit string) string {
+	short := shortCommit(commit)
+	if short == "" {
+		return channel
+	}
+	return channel + "-" + short
+}
+
+func shortCommit(commit string) string {
+	trimmed := strings.TrimSpace(commit)
+	if len(trimmed) > 7 {
+		return trimmed[:7]
+	}
+	return trimmed
 }
 
 func autoUpdateAvailableFromCommit(currentCommit string, latestCommit string) bool {
