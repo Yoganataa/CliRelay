@@ -2,14 +2,14 @@ name: Build & Push Docker Image
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: kittors/clirelay
 
 jobs:
   build-and-push:
@@ -28,9 +28,11 @@ jobs:
           set -euo pipefail
           REF_NAME="${GITHUB_REF_NAME:-main}"
           BACKEND_SHORT="$(git rev-parse --short HEAD)"
-          FRONTEND_SHORT="$(git ls-remote https://github.com/kittors/codeProxy.git refs/heads/main | awk '{print substr($1,1,7)}')"
+          FRONTEND_REF="${REF_NAME}"
+          FRONTEND_SHORT="$(git ls-remote https://github.com/kittors/codeProxy.git "refs/heads/${FRONTEND_REF}" | awk '{print substr($1,1,7)}')"
           echo "VERSION=${REF_NAME}-${BACKEND_SHORT}" >> "$GITHUB_ENV"
-          echo "UI_VERSION=panel-main-${FRONTEND_SHORT}" >> "$GITHUB_ENV"
+          echo "UI_VERSION=panel-${FRONTEND_REF}-${FRONTEND_SHORT}" >> "$GITHUB_ENV"
+          echo "FRONTEND_REF=${FRONTEND_REF}" >> "$GITHUB_ENV"
           echo "backend_short=${BACKEND_SHORT}" >> "$GITHUB_OUTPUT"
           echo "frontend_short=${FRONTEND_SHORT}" >> "$GITHUB_OUTPUT"
 
@@ -53,7 +55,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
+            type=raw,value=main,enable=${{ github.ref_name == 'main' }}
+            type=raw,value=dev,enable=${{ github.ref_name == 'dev' }}
+            type=raw,value=${{ github.ref_name }}-${{ steps.build_meta.outputs.backend_short }}
             type=sha,prefix=
             type=raw,value={{date 'YYYYMMDD'}}
 
@@ -74,5 +79,6 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ steps.build_date.outputs.date }}
             UI_VERSION=${{ env.UI_VERSION }}
+            FRONTEND_REF=${{ env.FRONTEND_REF }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

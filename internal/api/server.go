@@ -613,6 +613,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
+		mgmt.GET("/update/check", s.mgmt.CheckUpdate)
+		mgmt.POST("/update/apply", s.mgmt.ApplyUpdate)
+		mgmt.GET("/auto-update/enabled", s.mgmt.GetAutoUpdateEnabled)
+		mgmt.PUT("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)
+		mgmt.PATCH("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)
 
 		mgmt.GET("/debug", s.mgmt.GetDebug)
 		mgmt.PUT("/debug", s.mgmt.PutDebug)

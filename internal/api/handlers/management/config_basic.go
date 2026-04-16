@@ -186,6 +186,8 @@ func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 type releaseInfo struct {
 	TagName string `json:"tag_name"`
 	Name    string `json:"name"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
 }
 
 // GetLatestVersion returns the latest release version from GitHub without downloading assets.

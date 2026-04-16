@@ -465,6 +465,13 @@ remote-management:
   secret-key: "${CFG_SECRET}"
   disable-control-panel: false
 
+auto-update:
+  enabled: true
+  channel: auto
+  repository: https://github.com/kittors/CliRelay
+  docker-image: ghcr.io/kittors/clirelay
+  updater-url: http://clirelay-updater:8320
+
 auth-dir: "/root/.cli-proxy-api"
 
 api-keys:
@@ -491,6 +498,10 @@ CLIRELAY_LOCALE=${SCRIPT_LOCALE}
 CLIRELAY_LANG=$(lang_tag)
 CLIRELAY_LANGUAGE=$(language_tag)
 CLIRELAY_PORT=${CFG_PORT}
+CLIRELAY_UPDATE_CHANNEL=main
+CLIRELAY_UPDATER_URL=http://clirelay-updater:8320
+CLIRELAY_UPDATER_TOKEN=$(rand_hex 16)
+CLIRELAY_TARGET_SERVICE=clirelay
 TZ=${TZ_VALUE}
 EOF
 }
@@ -513,6 +524,10 @@ services:
     environment:
       TZ: ${TZ}
       CLIRELAY_LOCALE: ${CLIRELAY_LOCALE}
+      CLIRELAY_UPDATE_CHANNEL: ${CLIRELAY_UPDATE_CHANNEL}
+      CLIRELAY_UPDATER_URL: ${CLIRELAY_UPDATER_URL}
+      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN}
+      CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
       LANG: ${CLIRELAY_LANG}
       LANGUAGE: ${CLIRELAY_LANGUAGE}
       LC_ALL: ${CLIRELAY_LANG}
@@ -523,6 +538,20 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    restart: unless-stopped
+
+  clirelay-updater:
+    image: ${CLI_PROXY_IMAGE}
+    platform: ${CLI_PROXY_PLATFORM}
+    command: ["./clirelay-updater"]
+    environment:
+      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN}
+      CLIRELAY_COMPOSE_FILE: /workspace/docker-compose.yml
+      CLIRELAY_ENV_FILE: /workspace/.env
+      CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace:ro
     restart: unless-stopped
 YAML
 }

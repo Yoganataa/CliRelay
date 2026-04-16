@@ -21,6 +21,10 @@ import (
 const (
 	DefaultPanelGitHubRepository = "https://github.com/kittors/codeProxy"
 	DefaultPprofAddr             = "127.0.0.1:8316"
+	DefaultAutoUpdateChannel     = "auto"
+	DefaultAutoUpdateRepository  = "https://github.com/kittors/CliRelay"
+	DefaultAutoUpdateDockerImage = "ghcr.io/kittors/clirelay"
+	DefaultAutoUpdateUpdaterURL  = "http://clirelay-updater:8320"
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -49,6 +53,9 @@ type Config struct {
 
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
+
+	// AutoUpdate controls Docker-first update checks and updater sidecar integration.
+	AutoUpdate AutoUpdateConfig `yaml:"auto-update" json:"auto-update"`
 
 	// OAuthClients stores optional OAuth client credentials used by provider login flows.
 	// When empty, the runtime may fall back to environment variables (see oauth_clients.go).
@@ -239,6 +246,20 @@ type RemoteManagement struct {
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
+}
+
+// AutoUpdateConfig holds Docker-first update check and sidecar settings.
+type AutoUpdateConfig struct {
+	// Enabled controls whether the management UI should automatically prompt for updates.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Channel can be auto, main, or dev. Auto infers from the running build metadata.
+	Channel string `yaml:"channel,omitempty" json:"channel,omitempty"`
+	// Repository is the GitHub repository used for branch commits and release notes.
+	Repository string `yaml:"repository,omitempty" json:"repository,omitempty"`
+	// DockerImage is the image repository pulled by the updater sidecar.
+	DockerImage string `yaml:"docker-image,omitempty" json:"docker-image,omitempty"`
+	// UpdaterURL is the internal URL of the independent updater sidecar.
+	UpdaterURL string `yaml:"updater-url,omitempty" json:"updater-url,omitempty"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
@@ -665,6 +686,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.AutoUpdate.Enabled = true
+	cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel
+	cfg.AutoUpdate.Repository = DefaultAutoUpdateRepository
+	cfg.AutoUpdate.DockerImage = DefaultAutoUpdateDockerImage
+	cfg.AutoUpdate.UpdaterURL = DefaultAutoUpdateUpdaterURL
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -707,6 +733,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
+	cfg.SanitizeAutoUpdate()
 
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
@@ -836,6 +863,34 @@ func payloadRawString(value any) ([]byte, bool) {
 		return typed, true
 	default:
 		return nil, false
+	}
+}
+
+// SanitizeAutoUpdate normalizes Docker update settings while preserving an explicit disabled flag.
+func (cfg *Config) SanitizeAutoUpdate() {
+	if cfg == nil {
+		return
+	}
+	channel := strings.ToLower(strings.TrimSpace(cfg.AutoUpdate.Channel))
+	switch channel {
+	case "", "auto":
+		cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel
+	case "main", "dev":
+		cfg.AutoUpdate.Channel = channel
+	default:
+		cfg.AutoUpdate.Channel = DefaultAutoUpdateChannel
+	}
+	cfg.AutoUpdate.Repository = strings.TrimSpace(cfg.AutoUpdate.Repository)
+	if cfg.AutoUpdate.Repository == "" {
+		cfg.AutoUpdate.Repository = DefaultAutoUpdateRepository
+	}
+	cfg.AutoUpdate.DockerImage = strings.TrimSpace(cfg.AutoUpdate.DockerImage)
+	if cfg.AutoUpdate.DockerImage == "" {
+		cfg.AutoUpdate.DockerImage = DefaultAutoUpdateDockerImage
+	}
+	cfg.AutoUpdate.UpdaterURL = strings.TrimSpace(cfg.AutoUpdate.UpdaterURL)
+	if cfg.AutoUpdate.UpdaterURL == "" {
+		cfg.AutoUpdate.UpdaterURL = DefaultAutoUpdateUpdaterURL
 	}
 }
 

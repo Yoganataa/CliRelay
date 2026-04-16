@@ -289,6 +289,8 @@ The release artifact is currently named `cli-proxy-api`. The `clirelay` command 
 
 ### 🐳 Docker (Recommended)
 
+Docker is the recommended deployment path if you want automatic update prompts from the management panel. Published images include an updater sidecar that can pull the next `main`/`dev` image, restart the API container, and let the Web UI wait for the backend heartbeat before reporting success.
+
 **One-Click Deploy**:
 
 - Linux `amd64` / `arm64`: supported for automatic Docker installation
@@ -305,6 +307,7 @@ The script will:
 - let you choose **English** or **Chinese** during installation
 - persist that language into the container so the built-in TUI starts in the selected language by default
 - install a local `clirelay` helper command for day-2 operations
+- install an internal updater sidecar used by the Web UI's one-click Docker update flow
 
 On macOS, the installer will **not** try to install Docker for you. It will reuse your existing Docker runtime and stop with a clear message if Docker Desktop / OrbStack / Colima is not running.
 
@@ -318,7 +321,7 @@ clirelay logs
 clirelay tui
 ```
 
-`clirelay update` keeps the existing configuration and only refreshes the image + containers, so ongoing upgrades stay simple.
+`clirelay update` keeps the existing configuration and only refreshes the image + containers, so ongoing upgrades stay simple. The management panel can now do the same flow interactively: it checks GitHub releases/branch images, shows release notes, asks for confirmation, triggers the updater sidecar, and waits until the backend heartbeat is back.
 
 > 💡 If `curl` is not installed, install it first:
 > ```bash
@@ -344,6 +347,13 @@ CLI_PROXY_IMAGE=clirelay-local:dev CLI_PROXY_PULL_POLICY=never docker compose up
 ```
 
 For manual Docker deployments, you can also set `CLIRELAY_LOCALE=en` or `CLIRELAY_LOCALE=zh` in your Compose environment to control the default TUI language.
+
+To disable automatic update prompts, set the following in `config.yaml` or turn off **Automatic Update Checks** in the Config page:
+
+```yaml
+auto-update:
+  enabled: false
+```
 
 ### 🗄️ Enabling Data Persistence
 

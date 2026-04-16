@@ -289,6 +289,8 @@ go build -o cli-proxy-api ./cmd/server
 
 ### 🐳 Docker 部署（推荐）
 
+如果你希望管理面板自动检查并一键更新，推荐使用 Docker 部署。已发布镜像包含独立 updater sidecar，可拉取新的 `main`/`dev` 镜像、重启 API 容器，并让 Web UI 等待后端心跳恢复后再提示更新完成。
+
 **一键部署**：
 
 - Linux `amd64` / `arm64`：支持自动安装 Docker
@@ -305,6 +307,7 @@ curl -fsSL https://raw.githubusercontent.com/kittors/CliRelay/main/install.sh | 
 - 在安装时让你选择 **中文** 或 **English**
 - 将语言选择持久化到容器环境，让内置 TUI 默认以对应语言启动
 - 安装本地 `clirelay` 管理命令，方便后续运维
+- 安装内部 updater sidecar，用于 Web UI 的一键 Docker 更新流程
 
 在 macOS 上，安装脚本**不会**替你自动安装 Docker；如果 Docker Desktop / OrbStack / Colima 没有启动，脚本会直接给出明确提示。
 
@@ -318,7 +321,7 @@ clirelay logs
 clirelay tui
 ```
 
-其中 `clirelay update` 会保留现有配置，只刷新镜像和容器，后续升级维护会更省事。
+其中 `clirelay update` 会保留现有配置，只刷新镜像和容器，后续升级维护会更省事。管理面板现在也可以走同一条链路：检查 GitHub releases/分支镜像，展示更新内容，二次确认后触发 updater sidecar，并等待后端心跳恢复。
 
 > 💡 如果系统没有 `curl` 命令，请先安装：
 > ```bash
@@ -344,6 +347,13 @@ CLI_PROXY_IMAGE=clirelay-local:dev CLI_PROXY_PULL_POLICY=never docker compose up
 ```
 
 如果你是手动使用 Docker Compose 部署，也可以在环境变量中设置 `CLIRELAY_LOCALE=en` 或 `CLIRELAY_LOCALE=zh`，控制 TUI 的默认语言。
+
+如果不希望自动提示更新，可以在 `config.yaml` 中关闭，或在配置页关闭 **自动检查更新**：
+
+```yaml
+auto-update:
+  enabled: false
+```
 
 ### 🗄️ 开启数据持久化
 

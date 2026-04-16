@@ -18,6 +18,10 @@ services:
     environment:
       DEPLOY: ${DEPLOY:-}
       CLIRELAY_LOCALE: ${CLIRELAY_LOCALE:-zh}
+      CLIRELAY_UPDATE_CHANNEL: ${CLIRELAY_UPDATE_CHANNEL:-dev}
+      CLIRELAY_UPDATER_URL: ${CLIRELAY_UPDATER_URL:-http://clirelay-updater:8320}
+      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-}
+      CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
       LANG: ${CLIRELAY_LANG:-C.UTF-8}
       LANGUAGE: ${CLIRELAY_LANGUAGE:-en_US:en}
       LC_ALL: ${CLIRELAY_LANG:-C.UTF-8}
@@ -33,4 +37,18 @@ services:
       - ${CLI_PROXY_AUTH_PATH:-./auths}:/root/.cli-proxy-api
       - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
       - ${CLI_PROXY_DATA_PATH:-./data}:/CLIProxyAPI/data
+    restart: unless-stopped
+
+  clirelay-updater:
+    image: ${CLI_PROXY_IMAGE:-ghcr.io/kittors/clirelay:latest}
+    pull_policy: ${CLI_PROXY_PULL_POLICY:-always}
+    command: ["./clirelay-updater"]
+    environment:
+      CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-}
+      CLIRELAY_COMPOSE_FILE: /workspace/docker-compose.yml
+      CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-}
+      CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.yml:/workspace/docker-compose.yml:ro
     restart: unless-stopped
