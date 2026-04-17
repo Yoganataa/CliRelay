@@ -47,6 +47,7 @@ services:
       CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN:-}
       CLIRELAY_COMPOSE_FILE: /workspace/docker-compose.yml
       CLIRELAY_ENV_FILE: ${CLIRELAY_ENV_FILE:-/workspace/.env}
+      CLIRELAY_COMPOSE_PROJECT_NAME: ${CLIRELAY_COMPOSE_PROJECT_NAME:-}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE:-cli-proxy-api}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

@@ -22,13 +22,14 @@ const (
 	updateCommandTimeout = 10 * time.Minute
 )
 
-type composeRunner func(ctx context.Context, composeFile string, envFile string, service string) error
+type composeRunner func(ctx context.Context, composeFile string, envFile string, projectName string, service string) error
 
 type updaterConfig struct {
 	Addr           string
 	Token          string
 	ComposeFile    string
 	EnvFile        string
+	ProjectName    string
 	DefaultService string
 	Runner         composeRunner
 }
@@ -37,6 +38,7 @@ type updaterServer struct {
 	token          string
 	composeFile    string
 	envFile        string
+	projectName    string
 	defaultService string
 	runner         composeRunner
 	mu             sync.Mutex
@@ -59,6 +61,7 @@ func main() {
 		Token:          strings.TrimSpace(os.Getenv("CLIRELAY_UPDATER_TOKEN")),
 		ComposeFile:    envOrDefault("CLIRELAY_COMPOSE_FILE", defaultComposeFile),
 		EnvFile:        envOrDefault("CLIRELAY_ENV_FILE", defaultEnvFile),
+		ProjectName:    strings.TrimSpace(os.Getenv("CLIRELAY_COMPOSE_PROJECT_NAME")),
 		DefaultService: envOrDefault("CLIRELAY_TARGET_SERVICE", defaultTargetService),
 		Runner:         runComposeUpdate,
 	}
@@ -83,6 +86,7 @@ func newUpdaterServer(cfg updaterConfig) *updaterServer {
 		token:          strings.TrimSpace(cfg.Token),
 		composeFile:    envOrDefaultValue(cfg.ComposeFile, defaultComposeFile),
 		envFile:        envOrDefaultValue(cfg.EnvFile, defaultEnvFile),
+		projectName:    strings.TrimSpace(cfg.ProjectName),
 		defaultService: envOrDefaultValue(cfg.DefaultService, defaultTargetService),
 		runner:         runner,
 		lastStatus:     "idle",
@@ -136,7 +140,7 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), updateCommandTimeout)
 		defer cancel()
-		if err := s.runner(ctx, s.composeFile, s.envFile, service); err != nil {
+		if err := s.runner(ctx, s.composeFile, s.envFile, s.projectName, service); err != nil {
 			log.Printf("compose update failed: %v", err)
 			s.setStatus("failed", err.Error())
 			return
@@ -230,15 +234,28 @@ func (s *updaterServer) setStatus(status string, message string) {
 	s.lastError = message
 }
 
-func runComposeUpdate(ctx context.Context, composeFile string, envFile string, service string) error {
-	if err := runDockerCompose(ctx, composeFile, envFile, "pull", service); err != nil {
+func runComposeUpdate(ctx context.Context, composeFile string, envFile string, projectName string, service string) error {
+	if err := runDockerCompose(ctx, composeFile, envFile, projectName, "pull", service); err != nil {
 		return err
 	}
-	return runDockerCompose(ctx, composeFile, envFile, "up", "-d", "--remove-orphans", service)
+	return runDockerCompose(ctx, composeFile, envFile, projectName, "up", "-d", "--remove-orphans", service)
 }
 
-func runDockerCompose(ctx context.Context, composeFile string, envFile string, args ...string) error {
+func runDockerCompose(ctx context.Context, composeFile string, envFile string, projectName string, args ...string) error {
+	base := buildComposeArgs(composeFile, envFile, projectName, args...)
+	cmd := exec.CommandContext(ctx, "docker", base...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return errors.New(strings.TrimSpace(string(output)) + ": " + err.Error())
+	}
+	return nil
+}
+
+func buildComposeArgs(composeFile string, envFile string, projectName string, args ...string) []string {
 	base := []string{"compose"}
+	if strings.TrimSpace(projectName) != "" {
+		base = append(base, "--project-name", projectName)
+	}
 	if strings.TrimSpace(envFile) != "" {
 		base = append(base, "--env-file", envFile)
 	}
@@ -246,12 +263,7 @@ func runDockerCompose(ctx context.Context, composeFile string, envFile string, a
 		base = append(base, "-f", composeFile)
 	}
 	base = append(base, args...)
-	cmd := exec.CommandContext(ctx, "docker", base...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return errors.New(strings.TrimSpace(string(output)) + ": " + err.Error())
-	}
-	return nil
+	return base
 }
 
 func sanitizeServiceName(service string) string {

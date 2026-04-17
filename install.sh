@@ -502,6 +502,7 @@ CLIRELAY_UPDATE_CHANNEL=main
 CLIRELAY_UPDATER_URL=http://clirelay-updater:8320
 CLIRELAY_UPDATER_TOKEN=$(rand_hex 16)
 CLIRELAY_TARGET_SERVICE=clirelay
+CLIRELAY_COMPOSE_PROJECT_NAME=$(basename "${INSTALL_DIR}")
 TZ=${TZ_VALUE}
 EOF
 }
@@ -548,6 +549,7 @@ services:
       CLIRELAY_UPDATER_TOKEN: ${CLIRELAY_UPDATER_TOKEN}
       CLIRELAY_COMPOSE_FILE: /workspace/docker-compose.yml
       CLIRELAY_ENV_FILE: /workspace/.env
+      CLIRELAY_COMPOSE_PROJECT_NAME: ${CLIRELAY_COMPOSE_PROJECT_NAME}
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

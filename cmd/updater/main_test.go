@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ import (
 func TestUpdaterRejectsInvalidBearerToken(t *testing.T) {
 	server := newUpdaterServer(updaterConfig{
 		Token: "secret",
-		Runner: func(context.Context, string, string, string) error {
+		Runner: func(context.Context, string, string, string, string) error {
 			t.Fatal("runner should not be called")
 			return nil
 		},
@@ -39,7 +40,7 @@ func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 	called := make(chan struct{}, 1)
 	server := newUpdaterServer(updaterConfig{
 		EnvFile: envFile,
-		Runner: func(_ context.Context, _ string, _ string, _ string) error {
+		Runner: func(_ context.Context, _ string, _ string, _ string, _ string) error {
 			data, err := os.ReadFile(envFile)
 			if err != nil {
 				t.Errorf("read env file: %v", err)
@@ -87,7 +88,7 @@ func TestUpdaterRejectsRequestWhenEnvFileCannotBeUpdated(t *testing.T) {
 
 	server := newUpdaterServer(updaterConfig{
 		EnvFile: filepath.Join(envDir, ".env"),
-		Runner: func(_ context.Context, _ string, _ string, _ string) error {
+		Runner: func(_ context.Context, _ string, _ string, _ string, _ string) error {
 			t.Fatal("runner should not be called when env file cannot be updated")
 			return nil
 		},
@@ -116,13 +117,17 @@ func TestUpdaterAcceptsRequestAndRunsComposeUpdate(t *testing.T) {
 		Token:          "secret",
 		ComposeFile:    "/workspace/docker-compose.yml",
 		EnvFile:        "/workspace/.env",
+		ProjectName:    "cliproxy",
 		DefaultService: "clirelay",
-		Runner: func(_ context.Context, composeFile string, envFile string, service string) error {
+		Runner: func(_ context.Context, composeFile string, envFile string, projectName string, service string) error {
 			if composeFile != "/workspace/docker-compose.yml" {
 				t.Errorf("composeFile = %q", composeFile)
 			}
 			if envFile != "/workspace/.env" {
 				t.Errorf("envFile = %q", envFile)
+			}
+			if projectName != "cliproxy" {
+				t.Errorf("projectName = %q", projectName)
 			}
 			called <- service
 			return nil
@@ -146,5 +151,27 @@ func TestUpdaterAcceptsRequestAndRunsComposeUpdate(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for runner")
+	}
+}
+
+func TestBuildComposeArgsIncludesProjectName(t *testing.T) {
+	args := buildComposeArgs(
+		"/workspace/docker-compose.yml",
+		"/workspace/.env",
+		"cliproxy",
+		"up",
+		"-d",
+		"cli-proxy-api",
+	)
+
+	want := []string{
+		"compose",
+		"--project-name", "cliproxy",
+		"--env-file", "/workspace/.env",
+		"-f", "/workspace/docker-compose.yml",
+		"up", "-d", "cli-proxy-api",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args = %v, want %v", args, want)
 	}
 }
