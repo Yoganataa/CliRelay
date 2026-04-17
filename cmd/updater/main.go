@@ -124,15 +124,18 @@ func (s *updaterServer) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := persistRequestedImage(s.envFile, req.Image, req.Tag); err != nil {
+		message := "failed to update env file: " + err.Error()
+		log.Print(message)
+		s.setStatus("failed", message)
+		http.Error(w, message, http.StatusInternalServerError)
+		return
+	}
+
 	s.setStatus("running", "")
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), updateCommandTimeout)
 		defer cancel()
-		if err := persistRequestedImage(s.envFile, req.Image, req.Tag); err != nil {
-			log.Printf("compose update failed: %v", err)
-			s.setStatus("failed", err.Error())
-			return
-		}
 		if err := s.runner(ctx, s.composeFile, s.envFile, service); err != nil {
 			log.Printf("compose update failed: %v", err)
 			s.setStatus("failed", err.Error())

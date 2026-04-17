@@ -551,7 +551,8 @@ services:
       CLIRELAY_TARGET_SERVICE: ${CLIRELAY_TARGET_SERVICE}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./:/workspace:ro
+      - ./docker-compose.yml:/workspace/docker-compose.yml:ro
+      - ./.env:/workspace/.env
     restart: unless-stopped
 YAML
 }

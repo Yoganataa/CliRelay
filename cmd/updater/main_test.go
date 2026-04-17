@@ -76,6 +76,40 @@ func TestUpdaterPersistsRequestedImageBeforeComposeUpdate(t *testing.T) {
 	}
 }
 
+func TestUpdaterRejectsRequestWhenEnvFileCannotBeUpdated(t *testing.T) {
+	envDir := filepath.Join(t.TempDir(), "readonly")
+	if err := os.Mkdir(envDir, 0o500); err != nil {
+		t.Fatalf("make readonly dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(envDir, 0o700)
+	})
+
+	server := newUpdaterServer(updaterConfig{
+		EnvFile: filepath.Join(envDir, ".env"),
+		Runner: func(_ context.Context, _ string, _ string, _ string) error {
+			t.Fatal("runner should not be called when env file cannot be updated")
+			return nil
+		},
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/update",
+		strings.NewReader(`{"service":"cli-proxy-api","image":"ghcr.io/kittors/clirelay","tag":"dev"}`),
+	)
+	rec := httptest.NewRecorder()
+
+	server.handleUpdate(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "failed to update env file") {
+		t.Fatalf("body = %q, want env update failure", rec.Body.String())
+	}
+}
+
 func TestUpdaterAcceptsRequestAndRunsComposeUpdate(t *testing.T) {
 	called := make(chan string, 1)
 	server := newUpdaterServer(updaterConfig{
