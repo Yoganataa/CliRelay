@@ -621,6 +621,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 		mgmt.GET("/update/check", s.mgmt.CheckUpdate)
+		mgmt.GET("/update/current", s.mgmt.GetCurrentUpdateState)
 		mgmt.POST("/update/apply", s.mgmt.ApplyUpdate)
 		mgmt.GET("/auto-update/enabled", s.mgmt.GetAutoUpdateEnabled)
 		mgmt.PUT("/auto-update/enabled", s.mgmt.PutAutoUpdateEnabled)

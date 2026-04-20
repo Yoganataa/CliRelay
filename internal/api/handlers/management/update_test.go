@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
@@ -264,6 +265,68 @@ func TestBuildUpdateCheckUsesConfiguredPanelRepository(t *testing.T) {
 	}
 	if slices.Contains(repos, "kittors/codeProxy") {
 		t.Fatalf("repos = %v, did not expect default panel repo when config overrides it", repos)
+	}
+}
+
+func TestBuildCurrentUpdateStateDoesNotQueryGitHub(t *testing.T) {
+	origFetchBranchCommit := fetchBranchCommitForUpdateCheck
+	origFetchLatestRelease := fetchLatestReleaseInfoForUpdateCheck
+	origVersion := buildinfo.Version
+	origCommit := buildinfo.Commit
+	origBuildDate := buildinfo.BuildDate
+	origFrontendVersion := buildinfo.FrontendVersion
+	origFrontendCommit := buildinfo.FrontendCommit
+	origFrontendRef := buildinfo.FrontendRef
+	t.Cleanup(func() {
+		fetchBranchCommitForUpdateCheck = origFetchBranchCommit
+		fetchLatestReleaseInfoForUpdateCheck = origFetchLatestRelease
+		buildinfo.Version = origVersion
+		buildinfo.Commit = origCommit
+		buildinfo.BuildDate = origBuildDate
+		buildinfo.FrontendVersion = origFrontendVersion
+		buildinfo.FrontendCommit = origFrontendCommit
+		buildinfo.FrontendRef = origFrontendRef
+	})
+
+	fetchBranchCommitForUpdateCheck = func(ctx context.Context, client *http.Client, repo string, channel string) (branchCommitInfo, error) {
+		t.Fatal("buildCurrentUpdateState must not query GitHub branch commits")
+		return branchCommitInfo{}, nil
+	}
+	fetchLatestReleaseInfoForUpdateCheck = func(ctx context.Context, client *http.Client, repo string) (releaseInfo, error) {
+		t.Fatal("buildCurrentUpdateState must not query GitHub releases")
+		return releaseInfo{}, nil
+	}
+	buildinfo.Version = "dev-abcdef1"
+	buildinfo.Commit = "abcdef123456"
+	buildinfo.BuildDate = "2026-04-20T06:14:57Z"
+	buildinfo.FrontendVersion = "panel-dev-fedcba9"
+	buildinfo.FrontendCommit = "fedcba987654"
+	buildinfo.FrontendRef = "dev"
+
+	cfg := &config.Config{}
+	cfg.AutoUpdate.Enabled = true
+	cfg.AutoUpdate.Channel = "dev"
+	cfg.AutoUpdate.DockerImage = "ghcr.io/kittors/clirelay"
+	handler := &Handler{cfg: cfg}
+
+	resp := handler.buildCurrentUpdateState(context.Background())
+	if resp.CurrentVersion != "dev-abcdef1" {
+		t.Fatalf("CurrentVersion = %q, want dev-abcdef1", resp.CurrentVersion)
+	}
+	if resp.CurrentCommit != "abcdef123456" {
+		t.Fatalf("CurrentCommit = %q, want abcdef123456", resp.CurrentCommit)
+	}
+	if resp.CurrentUIVersion != "panel-dev-fedcba9" {
+		t.Fatalf("CurrentUIVersion = %q, want panel-dev-fedcba9", resp.CurrentUIVersion)
+	}
+	if resp.CurrentUICommit != "fedcba987654" {
+		t.Fatalf("CurrentUICommit = %q, want fedcba987654", resp.CurrentUICommit)
+	}
+	if resp.TargetChannel != "dev" {
+		t.Fatalf("TargetChannel = %q, want dev", resp.TargetChannel)
+	}
+	if resp.DockerTag != "dev" {
+		t.Fatalf("DockerTag = %q, want dev", resp.DockerTag)
 	}
 }
 

@@ -111,6 +111,10 @@ func (h *Handler) CheckUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+func (h *Handler) GetCurrentUpdateState(c *gin.Context) {
+	c.JSON(http.StatusOK, h.buildCurrentUpdateState(c.Request.Context()))
+}
+
 func (h *Handler) ApplyUpdate(c *gin.Context) {
 	if h == nil || h.cfg == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "config_unavailable"})
@@ -250,6 +254,32 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 		resp.Message = "already up to date"
 	}
 	return resp, nil
+}
+
+func (h *Handler) buildCurrentUpdateState(ctx context.Context) *updateCheckResponse {
+	cfg := &config.Config{}
+	if h != nil && h.cfg != nil {
+		cfg = h.cfg
+	}
+	cfg.SanitizeAutoUpdate()
+
+	channel := cfg.AutoUpdate.Channel
+	if channel == "auto" {
+		channel = inferAutoUpdateChannel(buildinfo.Version, os.Getenv(autoUpdateChannelEnv))
+	}
+
+	return &updateCheckResponse{
+		Enabled:          cfg.AutoUpdate.Enabled,
+		CurrentVersion:   currentUpdateDisplayVersion(buildinfo.Version),
+		CurrentCommit:    strings.TrimSpace(buildinfo.Commit),
+		CurrentUIVersion: currentFrontendDisplayVersion(buildinfo.FrontendVersion, buildinfo.FrontendRef, buildinfo.FrontendCommit),
+		CurrentUICommit:  strings.TrimSpace(buildinfo.FrontendCommit),
+		BuildDate:        buildinfo.BuildDate,
+		TargetChannel:    channel,
+		DockerImage:      cfg.AutoUpdate.DockerImage,
+		DockerTag:        dockerTagForChannel(channel, ""),
+		UpdaterAvailable: checkUpdaterAvailable(ctx, cfg),
+	}
 }
 
 func buildUpdateCheckWarning(branchErr error, frontendErr error) string {
