@@ -268,6 +268,81 @@ func TestBuildUpdateCheckUsesConfiguredPanelRepository(t *testing.T) {
 	}
 }
 
+func TestBuildUpdateCheckUsesRuntimePanelMetadata(t *testing.T) {
+	origFetchBranchCommit := fetchBranchCommitForUpdateCheck
+	origFetchLatestRelease := fetchLatestReleaseInfoForUpdateCheck
+	origVersion := buildinfo.Version
+	origCommit := buildinfo.Commit
+	origBuildDate := buildinfo.BuildDate
+	origFrontendVersion := buildinfo.FrontendVersion
+	origFrontendCommit := buildinfo.FrontendCommit
+	origFrontendRef := buildinfo.FrontendRef
+	t.Cleanup(func() {
+		fetchBranchCommitForUpdateCheck = origFetchBranchCommit
+		fetchLatestReleaseInfoForUpdateCheck = origFetchLatestRelease
+		buildinfo.Version = origVersion
+		buildinfo.Commit = origCommit
+		buildinfo.BuildDate = origBuildDate
+		buildinfo.FrontendVersion = origFrontendVersion
+		buildinfo.FrontendCommit = origFrontendCommit
+		buildinfo.FrontendRef = origFrontendRef
+	})
+
+	panelDir := t.TempDir()
+	t.Setenv("MANAGEMENT_PANEL_DIR", panelDir)
+	if err := os.WriteFile(filepath.Join(panelDir, "manage.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatalf("write manage.html: %v", err)
+	}
+	runtimeUICommit := "a28920de945ac13611eb88315cf5aff895bb8c78"
+	metadata := `{"version":"panel-dev-a28920d","ref":"dev","commit":"` + runtimeUICommit + `","repository":"https://github.com/router-for-me/Cli-Proxy-API-Management-Center"}`
+	if err := os.WriteFile(filepath.Join(panelDir, "panel-meta.json"), []byte(metadata), 0o644); err != nil {
+		t.Fatalf("write panel metadata: %v", err)
+	}
+
+	fetchBranchCommitForUpdateCheck = func(ctx context.Context, client *http.Client, repo string, channel string) (branchCommitInfo, error) {
+		switch repo {
+		case "kittors/CliRelay":
+			return branchCommitInfo{SHA: "1402b1d6970b7ce61eec9430b137e817c448d215"}, nil
+		case "router-for-me/Cli-Proxy-API-Management-Center":
+			return branchCommitInfo{SHA: runtimeUICommit}, nil
+		default:
+			t.Fatalf("unexpected repo %q", repo)
+			return branchCommitInfo{}, nil
+		}
+	}
+	fetchLatestReleaseInfoForUpdateCheck = func(ctx context.Context, client *http.Client, repo string) (releaseInfo, error) {
+		return releaseInfo{}, nil
+	}
+
+	buildinfo.Version = "dev-1402b1d"
+	buildinfo.Commit = "1402b1d6970b7ce61eec9430b137e817c448d215"
+	buildinfo.BuildDate = "2026-04-20T07:51:38Z"
+	buildinfo.FrontendVersion = "panel-dev-97847f8"
+	buildinfo.FrontendCommit = "97847f83ca0e33f3145a3526e9c9e47e0867803c"
+	buildinfo.FrontendRef = "dev"
+
+	cfg := &config.Config{}
+	cfg.AutoUpdate.Enabled = true
+	cfg.AutoUpdate.Channel = "dev"
+	cfg.AutoUpdate.Repository = "https://github.com/kittors/CliRelay"
+	cfg.RemoteManagement.PanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+
+	handler := &Handler{cfg: cfg}
+	resp, err := handler.buildUpdateCheck(context.Background())
+	if err != nil {
+		t.Fatalf("buildUpdateCheck() error = %v, want nil", err)
+	}
+	if resp.CurrentUIVersion != "panel-dev-a28920d" {
+		t.Fatalf("CurrentUIVersion = %q, want panel-dev-a28920d", resp.CurrentUIVersion)
+	}
+	if resp.CurrentUICommit != runtimeUICommit {
+		t.Fatalf("CurrentUICommit = %q, want %q", resp.CurrentUICommit, runtimeUICommit)
+	}
+	if resp.UpdateAvailable {
+		t.Fatalf("UpdateAvailable = true, want false when runtime panel metadata matches target")
+	}
+}
+
 func TestBuildCurrentUpdateStateDoesNotQueryGitHub(t *testing.T) {
 	origFetchBranchCommit := fetchBranchCommitForUpdateCheck
 	origFetchLatestRelease := fetchLatestReleaseInfoForUpdateCheck

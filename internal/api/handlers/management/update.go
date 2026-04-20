@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
@@ -236,8 +237,7 @@ func (h *Handler) buildUpdateCheck(ctx context.Context) (*updateCheckResponse, e
 
 	currentVersion := currentUpdateDisplayVersion(buildinfo.Version)
 	currentCommit := strings.TrimSpace(buildinfo.Commit)
-	currentUIVersion := currentFrontendDisplayVersion(buildinfo.FrontendVersion, buildinfo.FrontendRef, buildinfo.FrontendCommit)
-	currentUICommit := strings.TrimSpace(buildinfo.FrontendCommit)
+	currentUIVersion, currentUICommit := h.currentFrontendState()
 
 	latestVersion := currentVersion
 	latestCommit := currentCommit
@@ -303,18 +303,42 @@ func (h *Handler) buildCurrentUpdateState(ctx context.Context) *updateCheckRespo
 		channel = inferAutoUpdateChannel(buildinfo.Version, os.Getenv(autoUpdateChannelEnv))
 	}
 
+	currentUIVersion, currentUICommit := h.currentFrontendState()
+
 	return &updateCheckResponse{
 		Enabled:          cfg.AutoUpdate.Enabled,
 		CurrentVersion:   currentUpdateDisplayVersion(buildinfo.Version),
 		CurrentCommit:    strings.TrimSpace(buildinfo.Commit),
-		CurrentUIVersion: currentFrontendDisplayVersion(buildinfo.FrontendVersion, buildinfo.FrontendRef, buildinfo.FrontendCommit),
-		CurrentUICommit:  strings.TrimSpace(buildinfo.FrontendCommit),
+		CurrentUIVersion: currentUIVersion,
+		CurrentUICommit:  currentUICommit,
 		BuildDate:        buildinfo.BuildDate,
 		TargetChannel:    channel,
 		DockerImage:      cfg.AutoUpdate.DockerImage,
 		DockerTag:        dockerTagForChannel(channel, ""),
 		UpdaterAvailable: checkUpdaterAvailable(ctx, cfg),
 	}
+}
+
+func (h *Handler) currentFrontendState() (string, string) {
+	version := buildinfo.FrontendVersion
+	ref := buildinfo.FrontendRef
+	commit := strings.TrimSpace(buildinfo.FrontendCommit)
+
+	if h != nil {
+		if meta, ok := managementasset.CurrentPanelMetadata(h.configFilePath); ok {
+			if meta.Version != "" {
+				version = meta.Version
+			}
+			if meta.Ref != "" {
+				ref = meta.Ref
+			}
+			if meta.Commit != "" {
+				commit = meta.Commit
+			}
+		}
+	}
+
+	return currentFrontendDisplayVersion(version, ref, commit), strings.TrimSpace(commit)
 }
 
 func buildUpdateCheckWarning(branchErr error, frontendErr error) string {
