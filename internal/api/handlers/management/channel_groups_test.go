@@ -313,6 +313,38 @@ func TestBuildChannelGroupItemsSkipsDisabledAuthChannels(t *testing.T) {
 	}
 }
 
+func TestBuildChannelGroupItemsDoesNotSurfaceDeletedConfiguredChannels(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			ChannelGroups: []config.RoutingChannelGroup{
+				{
+					Name: "chatgpt-pro",
+					Match: config.ChannelGroupMatch{
+						Channels: []string{"chatgpt-pro1"},
+					},
+				},
+			},
+			PathRoutes: []config.RoutingPathRoute{
+				{Path: "/openai/pro", Group: "chatgpt-pro", StripPrefix: true},
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(cfg, nil)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(items))
+	}
+	if items[0].Name != "chatgpt-pro" {
+		t.Fatalf("group name = %q, want chatgpt-pro", items[0].Name)
+	}
+	if len(items[0].Channels) != 0 {
+		t.Fatalf("group channels = %v, want no active channels for deleted references", items[0].Channels)
+	}
+	if !containsString(items[0].PathRoutes, "/openai/pro") {
+		t.Fatalf("path-routes = %v, want /openai/pro", items[0].PathRoutes)
+	}
+}
+
 func TestCanonicalizeRoutingConfigChannelsRenamedOAuthChannel(t *testing.T) {
 	cfg := &config.Config{
 		Routing: config.RoutingConfig{
