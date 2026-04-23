@@ -537,7 +537,12 @@ func buildCodexImagePrompt(parsed *codexImageRequest, index int) string {
 		extras = append(extras, fmt.Sprintf("This is variation %d of %d. Keep it distinct while following the same prompt.", index+1, parsed.N))
 	}
 	if len(parsed.Uploads) > 0 {
-		extras = append(extras, "Use the attached image as the source reference and preserve the original composition unless the prompt says otherwise.")
+		extras = append(extras,
+			"Use the attached image as the source reference and preserve the original composition unless the prompt says otherwise.",
+			"Create a new edited image from the uploaded source image and apply the requested changes.",
+			"Do not return the original uploaded image as the final output.",
+			"Output only the edited result image.",
+		)
 	}
 	if len(extras) == 0 {
 		return base

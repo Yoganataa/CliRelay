@@ -429,3 +429,16 @@ func TestCollectCodexImagePollPointersKeepsGeneratedToolAssets(t *testing.T) {
 		t.Fatalf("pointer = %#v, want generated file-service pointer", items[0])
 	}
 }
+
+func TestBuildCodexImagePromptForEditsForcesNewOutput(t *testing.T) {
+	prompt := buildCodexImagePrompt(&codexImageRequest{
+		Prompt: "把这张红色图标改成绿色图标",
+		Uploads: []codexImageUpload{
+			{FileName: "source.png", Data: []byte("abc")},
+		},
+	}, 0)
+
+	if !strings.Contains(prompt, "Do not return the original uploaded image") {
+		t.Fatalf("prompt = %q, want explicit instruction to avoid returning the uploaded image", prompt)
+	}
+}
