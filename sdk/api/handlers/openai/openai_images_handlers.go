@@ -25,6 +25,7 @@ const (
 	openAIImageGenerationAlt = "images/generations"
 	openAIImageEditsAlt      = "images/edits"
 	openAIImageMaxUploadSize = 20 << 20
+	openAIImageMaxN          = 4
 )
 
 type OpenAIImagesAPIHandler struct {
@@ -44,11 +45,7 @@ func (h *OpenAIImagesAPIHandler) Generations(c *gin.Context) {
 }
 
 func (h *OpenAIImagesAPIHandler) Edits(c *gin.Context) {
-	rawJSON, ok := readOpenAIImageEditRequest(c)
-	if !ok {
-		return
-	}
-	h.executeImages(c, rawJSON, openAIImageEditsAlt)
+	writeOpenAIImagesError(c, http.StatusNotImplemented, "not_supported", "image edits are temporarily disabled")
 }
 
 func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, alt string) {
@@ -58,6 +55,11 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 		if updated, err := sjson.SetBytes(rawJSON, "model", modelName); err == nil {
 			rawJSON = updated
 		}
+	}
+	imageCount, countErr := openAIImageRequestCount(rawJSON)
+	if countErr != nil {
+		writeOpenAIImagesError(c, http.StatusBadRequest, "invalid_request_error", countErr.Error())
+		return
 	}
 
 	cliCtx := context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
@@ -70,27 +72,104 @@ func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, a
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 	defer stopKeepAlive()
 
-	resp, err := h.AuthManager.Execute(cliCtx, []string{"codex"}, coreexecutor.Request{
-		Model:   "",
-		Payload: rawJSON,
-		Format:  sdktranslator.FromString("openai"),
-	}, coreexecutor.Options{
-		Alt:             alt,
-		OriginalRequest: rawJSON,
-		SourceFormat:    sdktranslator.FromString("openai"),
-		Metadata:        meta,
-	})
-	if err != nil {
-		status := http.StatusBadGateway
-		if statusErr, ok := err.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
-			status = statusErr.StatusCode()
+	payloads := make([][]byte, 0, imageCount)
+	var responseHeaders http.Header
+	for i := 0; i < imageCount; i++ {
+		execPayload := rawJSON
+		if imageCount > 1 {
+			var setErr error
+			execPayload, setErr = sjson.SetBytes(rawJSON, "n", 1)
+			if setErr != nil {
+				writeOpenAIImagesError(c, http.StatusBadRequest, "invalid_request_error", "invalid image generation request")
+				return
+			}
 		}
-		writeOpenAIImagesError(c, status, errorTypeForStatus(status), err.Error())
+		resp, err := h.AuthManager.Execute(cliCtx, []string{"codex"}, coreexecutor.Request{
+			Model:   "",
+			Payload: execPayload,
+			Format:  sdktranslator.FromString("openai"),
+		}, coreexecutor.Options{
+			Alt:             alt,
+			OriginalRequest: rawJSON,
+			SourceFormat:    sdktranslator.FromString("openai"),
+			Metadata:        cloneImageExecutionMetadata(meta),
+		})
+		if err != nil {
+			status := http.StatusBadGateway
+			if statusErr, ok := err.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
+				status = statusErr.StatusCode()
+			}
+			writeOpenAIImagesError(c, status, errorTypeForStatus(status), err.Error())
+			return
+		}
+		if responseHeaders == nil {
+			responseHeaders = resp.Headers
+		}
+		payloads = append(payloads, resp.Payload)
+	}
+	payload, err := mergeOpenAIImageResponses(payloads)
+	if err != nil {
+		writeOpenAIImagesError(c, http.StatusBadGateway, "server_error", err.Error())
 		return
 	}
 
-	handlers.WriteUpstreamHeaders(c.Writer.Header(), resp.Headers)
-	c.Data(http.StatusOK, "application/json; charset=utf-8", resp.Payload)
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), responseHeaders)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", payload)
+}
+
+func openAIImageRequestCount(rawJSON []byte) (int, error) {
+	nResult := gjson.GetBytes(rawJSON, "n")
+	if !nResult.Exists() {
+		return 1, nil
+	}
+	if nResult.Type != gjson.Number {
+		return 0, fmt.Errorf("n must be a number")
+	}
+	n := int(nResult.Int())
+	if n < 1 || n > openAIImageMaxN {
+		return 0, fmt.Errorf("n must be between 1 and %d", openAIImageMaxN)
+	}
+	return n, nil
+}
+
+func cloneImageExecutionMetadata(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(meta))
+	for key, value := range meta {
+		out[key] = value
+	}
+	return out
+}
+
+func mergeOpenAIImageResponses(payloads [][]byte) ([]byte, error) {
+	if len(payloads) == 0 {
+		return nil, fmt.Errorf("image generation returned no responses")
+	}
+	if len(payloads) == 1 {
+		return payloads[0], nil
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(payloads[0], &merged); err != nil {
+		return nil, fmt.Errorf("parse image generation response: %w", err)
+	}
+	data := make([]json.RawMessage, 0, len(payloads))
+	for _, payload := range payloads {
+		var item struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(payload, &item); err != nil {
+			return nil, fmt.Errorf("parse image generation response: %w", err)
+		}
+		data = append(data, item.Data...)
+	}
+	encodedData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("encode image generation response: %w", err)
+	}
+	merged["data"] = encodedData
+	return json.Marshal(merged)
 }
 
 func readOpenAIImageEditRequest(c *gin.Context) ([]byte, bool) {
@@ -191,7 +270,9 @@ func firstOpenAIImagesFormValue(values map[string][]string, key, fallback string
 }
 
 func requestImageExecutionMetadata(c *gin.Context) map[string]any {
-	meta := make(map[string]any)
+	meta := map[string]any{
+		coreexecutor.SinglePickMetadataKey: true,
+	}
 	if metadataVal, exists := c.Get("accessMetadata"); exists {
 		if metadata, ok := metadataVal.(map[string]string); ok {
 			if allowedChannels := strings.TrimSpace(metadata["allowed-channels"]); allowedChannels != "" {
@@ -211,9 +292,6 @@ func requestImageExecutionMetadata(c *gin.Context) map[string]any {
 				meta[coreexecutor.RouteFallbackMetadataKey] = fallback
 			}
 		}
-	}
-	if len(meta) == 0 {
-		return nil
 	}
 	return meta
 }

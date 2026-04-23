@@ -3,10 +3,12 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -21,6 +23,7 @@ type imageCaptureExecutor struct {
 	alt      string
 	model    string
 	payload  string
+	payloads []string
 	metadata map[string]any
 	calls    int
 }
@@ -32,8 +35,13 @@ func (e *imageCaptureExecutor) Execute(ctx context.Context, auth *coreauth.Auth,
 	e.alt = opts.Alt
 	e.model = req.Model
 	e.payload = string(req.Payload)
+	e.payloads = append(e.payloads, e.payload)
 	e.metadata = opts.Metadata
-	return coreexecutor.Response{Payload: []byte(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`)}, nil
+	b64 := "aGVsbG8="
+	if e.calls > 1 {
+		b64 = "aGVsbG8" + strconv.Itoa(e.calls) + "="
+	}
+	return coreexecutor.Response{Payload: []byte(`{"created":1,"data":[{"b64_json":"` + b64 + `"}]}`)}, nil
 }
 
 func (e *imageCaptureExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
@@ -99,6 +107,9 @@ func TestOpenAIImagesGenerationsExecutesCodexImageAlt(t *testing.T) {
 	if executor.metadata["allowed-channels"] != "Team Codex" {
 		t.Fatalf("allowed channel metadata = %#v", executor.metadata["allowed-channels"])
 	}
+	if executor.metadata[coreexecutor.SinglePickMetadataKey] != true {
+		t.Fatalf("single-pick metadata = %#v, want true", executor.metadata[coreexecutor.SinglePickMetadataKey])
+	}
 	if strings.TrimSpace(resp.Body.String()) != `{"created":1,"data":[{"b64_json":"aGVsbG8="}]}` {
 		t.Fatalf("body = %s", resp.Body.String())
 	}
@@ -141,7 +152,57 @@ func TestOpenAIImagesGenerationsDefaultsModel(t *testing.T) {
 	}
 }
 
-func TestOpenAIImagesEditsConvertsMultipartToCodexImageAlt(t *testing.T) {
+func TestOpenAIImagesGenerationsSplitsMultipleImagesIntoSingleImageExecutions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &imageCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Label:    "Team Codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"access_token": "token", "email": "team@example.com"},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIImagesAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/images/generations", h.Generations)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"draw a fox","n":3}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	}
+	if executor.calls != 3 {
+		t.Fatalf("executor calls = %d, want 3", executor.calls)
+	}
+	for i, payload := range executor.payloads {
+		if !strings.Contains(payload, `"n":1`) {
+			t.Fatalf("payload[%d] = %s, want n=1", i, payload)
+		}
+	}
+	var body struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if len(body.Data) != 3 {
+		t.Fatalf("data length = %d, want 3", len(body.Data))
+	}
+}
+
+func TestOpenAIImagesEditsReturnsTemporarilyDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &imageCaptureExecutor{}
@@ -181,22 +242,13 @@ func TestOpenAIImagesEditsConvertsMultipartToCodexImageAlt(t *testing.T) {
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", resp.Code, http.StatusOK, resp.Body.String())
+	if resp.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d, body=%s", resp.Code, http.StatusNotImplemented, resp.Body.String())
 	}
-	if executor.alt != "images/edits" {
-		t.Fatalf("alt = %q, want images/edits", executor.alt)
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
 	}
-	for _, want := range []string{
-		`"prompt":"make it blue"`,
-		`"size":"1024x1792"`,
-		`"quality":"medium"`,
-		`"n":2`,
-		`"file_name":"icon.png"`,
-		`"data_base64":"aGVsbG8="`,
-	} {
-		if !strings.Contains(executor.payload, want) {
-			t.Fatalf("payload = %s, want to contain %s", executor.payload, want)
-		}
+	if !strings.Contains(resp.Body.String(), "image edits are temporarily disabled") {
+		t.Fatalf("body = %s, want disabled message", resp.Body.String())
 	}
 }

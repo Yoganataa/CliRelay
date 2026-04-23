@@ -3,12 +3,15 @@ package management
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -16,10 +19,25 @@ import (
 )
 
 type managementImageExecutor struct {
-	alt     string
-	model   string
-	payload string
-	calls   int
+	alt      string
+	model    string
+	payload  string
+	payloads []string
+	metadata map[string]any
+	calls    int
+	err      error
+}
+
+type managementUpstreamStatusError struct {
+	code         int
+	message      string
+	upstreamBody []byte
+}
+
+func (e managementUpstreamStatusError) Error() string   { return e.message }
+func (e managementUpstreamStatusError) StatusCode() int { return e.code }
+func (e managementUpstreamStatusError) UpstreamErrorBody() []byte {
+	return append([]byte(nil), e.upstreamBody...)
 }
 
 func (e *managementImageExecutor) Identifier() string { return "codex" }
@@ -29,7 +47,16 @@ func (e *managementImageExecutor) Execute(ctx context.Context, auth *coreauth.Au
 	e.alt = opts.Alt
 	e.model = req.Model
 	e.payload = string(req.Payload)
-	return coreexecutor.Response{Payload: []byte(`{"created":1,"data":[{"b64_json":"dGVzdA=="}]}`)}, nil
+	e.payloads = append(e.payloads, e.payload)
+	e.metadata = opts.Metadata
+	if e.err != nil {
+		return coreexecutor.Response{}, e.err
+	}
+	b64 := "dGVzdA=="
+	if e.calls > 1 {
+		b64 = "dGVzdA" + strconv.Itoa(e.calls) + "="
+	}
+	return coreexecutor.Response{Payload: []byte(`{"created":1,"data":[{"b64_json":"` + b64 + `"}]}`)}, nil
 }
 
 func (e *managementImageExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
@@ -48,6 +75,113 @@ func (e *managementImageExecutor) HttpRequest(context.Context, *coreauth.Auth, *
 	return nil, errors.New("not implemented")
 }
 
+func TestPostImageGenerationTestReturnsStructuredUpstreamError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &managementImageExecutor{err: errors.New("openai image conversation returned no downloadable images")}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"access_token": "token"},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	h := &Handler{authManager: manager}
+	_, execErr := h.executeImageGenerationTest(context.Background(), []byte(`{
+		"model":"gpt-image-2",
+		"prompt":"safe test prompt",
+		"size":"1024x1792",
+		"quality":"medium",
+		"n":1
+	}`), imageGenerationAlt)
+	if execErr == nil {
+		t.Fatal("executeImageGenerationTest() error = nil")
+	}
+
+	response := imageGenerationErrorResponse(execErr, "upstream_error")
+	data, _ := json.Marshal(response)
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if body.Error.Type != "upstream_error" {
+		t.Fatalf("error.type = %q, want upstream_error", body.Error.Type)
+	}
+	if !strings.Contains(body.Error.Message, "no downloadable images") {
+		t.Fatalf("error.message = %q, want upstream failure message", body.Error.Message)
+	}
+}
+
+func TestPostImageGenerationTestIncludesOfficialUpstreamErrorBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &managementImageExecutor{
+		err: managementUpstreamStatusError{
+			code:    http.StatusTooManyRequests,
+			message: "rate limit exceeded",
+			upstreamBody: []byte(
+				`{"error":{"message":"rate limit exceeded","type":"rate_limit_error","code":"rate_limit"}}`,
+			),
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"access_token": "token"},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	h := &Handler{authManager: manager}
+	_, execErr := h.executeImageGenerationTest(context.Background(), []byte(`{
+		"model":"gpt-image-2",
+		"prompt":"safe test prompt"
+	}`), imageGenerationAlt)
+	if execErr == nil {
+		t.Fatal("executeImageGenerationTest() error = nil")
+	}
+
+	response := imageGenerationErrorResponse(execErr, "upstream_error")
+	data, _ := json.Marshal(response)
+	var body struct {
+		Error struct {
+			Message  string `json:"message"`
+			Type     string `json:"type"`
+			Upstream struct {
+				Error struct {
+					Message string `json:"message"`
+					Type    string `json:"type"`
+					Code    string `json:"code"`
+				} `json:"error"`
+			} `json:"upstream"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if body.Error.Type != "upstream_error" {
+		t.Fatalf("error.type = %q, want upstream_error", body.Error.Type)
+	}
+	if body.Error.Upstream.Error.Type != "rate_limit_error" {
+		t.Fatalf("upstream.error.type = %q, want rate_limit_error", body.Error.Upstream.Error.Type)
+	}
+	if body.Error.Upstream.Error.Code != "rate_limit" {
+		t.Fatalf("upstream.error.code = %q, want rate_limit", body.Error.Upstream.Error.Code)
+	}
+}
+
 func TestPostImageGenerationTestExecutesCodexImageAlt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -64,16 +198,10 @@ func TestPostImageGenerationTestExecutesCodexImageAlt(t *testing.T) {
 	}
 
 	h := &Handler{authManager: manager}
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(http.MethodPost, "/image-generation/test", strings.NewReader(`{"prompt":"test prompt"}`))
-	req.Header.Set("Content-Type", "application/json")
-	c.Request = req
+	_, err := h.executeImageGenerationTest(context.Background(), []byte(`{"model":"gpt-image-2","prompt":"test prompt"}`), imageGenerationAlt)
 
-	h.PostImageGenerationTest(c)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if err != nil {
+		t.Fatalf("executeImageGenerationTest() error = %v", err)
 	}
 	if executor.calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", executor.calls)
@@ -89,6 +217,9 @@ func TestPostImageGenerationTestExecutesCodexImageAlt(t *testing.T) {
 	}
 	if !strings.Contains(executor.payload, `"size":"1024x1024"`) && strings.Contains(executor.payload, "size") {
 		t.Fatalf("payload = %s, should only include explicit size", executor.payload)
+	}
+	if executor.metadata[coreexecutor.SinglePickMetadataKey] != true {
+		t.Fatalf("single-pick metadata = %#v, want true", executor.metadata[coreexecutor.SinglePickMetadataKey])
 	}
 }
 
@@ -108,12 +239,63 @@ func TestPostImageGenerationTestForwardsGenerationOptions(t *testing.T) {
 	}
 
 	h := &Handler{authManager: manager}
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(http.MethodPost, "/image-generation/test", strings.NewReader(`{
+	result, err := h.executeImageGenerationTest(context.Background(), []byte(`{
 		"prompt":"test prompt",
 		"size":"1024x1792",
 		"quality":"high",
+		"n":2
+	}`), imageGenerationAlt)
+
+	if err != nil {
+		t.Fatalf("executeImageGenerationTest() error = %v", err)
+	}
+	if executor.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2", executor.calls)
+	}
+	if executor.alt != "images/generations" {
+		t.Fatalf("alt = %q, want images/generations", executor.alt)
+	}
+	for i, payload := range executor.payloads {
+		for _, want := range []string{`"size":"1024x1792"`, `"quality":"high"`, `"n":1`} {
+			if !strings.Contains(payload, want) {
+				t.Fatalf("payload[%d] = %s, want %s", i, payload, want)
+			}
+		}
+	}
+	var body struct {
+		Data []struct {
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(result, &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if len(body.Data) != 2 {
+		t.Fatalf("data length = %d, want 2", len(body.Data))
+	}
+}
+
+func TestPostImageGenerationTestCreatesTaskAndPollsSucceededResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &managementImageExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"access_token": "token"},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	h := &Handler{authManager: manager}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/image-generation/test", strings.NewReader(`{
+		"model":"gpt-image-2",
+		"prompt":"safe test prompt",
 		"n":2
 	}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -121,20 +303,155 @@ func TestPostImageGenerationTestForwardsGenerationOptions(t *testing.T) {
 
 	h.PostImageGenerationTest(c)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
 	}
-	if executor.alt != "images/generations" {
-		t.Fatalf("alt = %q, want images/generations", executor.alt)
+	var created struct {
+		TaskID string `json:"task_id"`
+		Status string `json:"status"`
+		Phase  string `json:"phase"`
 	}
-	for _, want := range []string{`"size":"1024x1792"`, `"quality":"high"`, `"n":2`} {
-		if !strings.Contains(executor.payload, want) {
-			t.Fatalf("payload = %s, want %s", executor.payload, want)
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal create task response: %v", err)
+	}
+	if created.TaskID == "" {
+		t.Fatal("task_id is empty")
+	}
+	if created.Status != "queued" {
+		t.Fatalf("status = %q, want queued", created.Status)
+	}
+
+	var polled struct {
+		TaskID string `json:"task_id"`
+		Status string `json:"status"`
+		Phase  string `json:"phase"`
+		Result struct {
+			Data []struct {
+				B64JSON string `json:"b64_json"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	waitForImageGenerationTask(t, h, created.TaskID, func(body []byte) bool {
+		if err := json.Unmarshal(body, &polled); err != nil {
+			t.Fatalf("Unmarshal poll response: %v", err)
 		}
+		return polled.Status == "succeeded"
+	})
+	if polled.TaskID != created.TaskID {
+		t.Fatalf("task_id = %q, want %q", polled.TaskID, created.TaskID)
+	}
+	if polled.Phase != "completed" {
+		t.Fatalf("phase = %q, want completed", polled.Phase)
+	}
+	if len(polled.Result.Data) != 2 {
+		t.Fatalf("result.data length = %d, want 2", len(polled.Result.Data))
 	}
 }
 
-func TestPostImageGenerationTestAcceptsMultipartImageEdits(t *testing.T) {
+func TestPostImageGenerationTestCreatesTaskAndPollsFailedError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &managementImageExecutor{
+		err: managementUpstreamStatusError{
+			code:    http.StatusTooManyRequests,
+			message: "rate limit exceeded",
+			upstreamBody: []byte(
+				`{"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`,
+			),
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"access_token": "token"},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	h := &Handler{authManager: manager}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/image-generation/test", strings.NewReader(`{
+		"model":"gpt-image-2",
+		"prompt":"safe test prompt"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.PostImageGenerationTest(c)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	var created struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal create task response: %v", err)
+	}
+
+	var polled struct {
+		Status string `json:"status"`
+		Error  struct {
+			Status int `json:"status"`
+			Body   struct {
+				Error struct {
+					Message  string `json:"message"`
+					Type     string `json:"type"`
+					Upstream struct {
+						Error struct {
+							Type string `json:"type"`
+						} `json:"error"`
+					} `json:"upstream"`
+				} `json:"error"`
+			} `json:"body"`
+		} `json:"error"`
+	}
+	waitForImageGenerationTask(t, h, created.TaskID, func(body []byte) bool {
+		if err := json.Unmarshal(body, &polled); err != nil {
+			t.Fatalf("Unmarshal poll response: %v", err)
+		}
+		return polled.Status == "failed"
+	})
+	if polled.Error.Status != http.StatusTooManyRequests {
+		t.Fatalf("error.status = %d, want %d", polled.Error.Status, http.StatusTooManyRequests)
+	}
+	if polled.Error.Body.Error.Type != "upstream_error" {
+		t.Fatalf("error.body.error.type = %q, want upstream_error", polled.Error.Body.Error.Type)
+	}
+	if polled.Error.Body.Error.Upstream.Error.Type != "rate_limit_error" {
+		t.Fatalf("upstream.error.type = %q, want rate_limit_error", polled.Error.Body.Error.Upstream.Error.Type)
+	}
+}
+
+func waitForImageGenerationTask(t *testing.T, h *Handler, taskID string, done func([]byte) bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Params = gin.Params{{Key: "task_id", Value: taskID}}
+		c.Request = httptest.NewRequest(http.MethodGet, "/image-generation/test/"+taskID, nil)
+
+		h.GetImageGenerationTestTask(c)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("poll status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if done(rec.Body.Bytes()) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for image generation task %s, last body=%s", taskID, rec.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPostImageGenerationTestRejectsMultipartImageEditsWhileDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &managementImageExecutor{}
@@ -172,16 +489,14 @@ func TestPostImageGenerationTestAcceptsMultipartImageEdits(t *testing.T) {
 
 	h.PostImageGenerationTest(c)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if executor.alt != "images/edits" {
-		t.Fatalf("alt = %q, want images/edits", executor.alt)
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
 	}
-	for _, want := range []string{`"prompt":"make it blue"`, `"file_name":"icon.png"`, `"data_base64":"aGVsbG8="`, `"n":2`} {
-		if !strings.Contains(executor.payload, want) {
-			t.Fatalf("payload = %s, want %s", executor.payload, want)
-		}
+	if !strings.Contains(rec.Body.String(), "image edits are temporarily disabled") {
+		t.Fatalf("body = %s, want disabled message", rec.Body.String())
 	}
 }
 

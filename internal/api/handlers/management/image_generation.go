@@ -11,8 +11,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -20,10 +22,24 @@ import (
 )
 
 const (
-	imageGenerationModel = "gpt-image-2"
-	imageGenerationAlt   = "images/generations"
-	imageEditsAlt        = "images/edits"
+	imageGenerationModel        = "gpt-image-2"
+	imageGenerationAlt          = "images/generations"
+	imageEditsAlt               = "images/edits"
+	imageMaxUploads             = 5
+	imageGenerationTestTimeout  = 5 * time.Minute
+	imageGenerationTaskTTL      = 30 * time.Minute
+	imageGenerationSystemAPIKey = "POST /image-generation/test"
 )
+
+type imageGenerationTask struct {
+	ID        string
+	Status    string
+	Phase     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Result    json.RawMessage
+	Error     gin.H
+}
 
 func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 	payload, alt, err := parseImageGenerationTestPayload(c)
@@ -36,33 +52,304 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 		return
 	}
 
-	cliCtx := context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
-	c.Set("apiKey", "POST /image-generation/test")
-	resp, err := h.authManager.Execute(cliCtx, []string{"codex"}, coreexecutor.Request{
-		Model:   "",
-		Payload: payload,
-		Format:  sdktranslator.FromString("openai"),
-	}, coreexecutor.Options{
-		Alt:          alt,
-		SourceFormat: sdktranslator.FromString("openai"),
+	task := h.createImageGenerationTask()
+	c.JSON(http.StatusAccepted, h.imageGenerationTaskSnapshot(task))
+
+	go h.runImageGenerationTask(task.ID, payload, alt)
+}
+
+func (h *Handler) GetImageGenerationTestTask(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id is required"})
+		return
+	}
+	task := h.getImageGenerationTask(taskID)
+	if task == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "image generation task not found"})
+		return
+	}
+	c.JSON(http.StatusOK, h.imageGenerationTaskSnapshot(task))
+}
+
+func (h *Handler) runImageGenerationTask(taskID string, payload []byte, alt string) {
+	h.updateImageGenerationTask(taskID, func(task *imageGenerationTask) {
+		task.Status = "running"
+		task.Phase = "queued"
 	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), imageGenerationTestTimeout)
+	defer cancel()
+	ctx = context.WithValue(ctx, util.ContextKeyAPIKey, imageGenerationSystemAPIKey)
+	ctx = context.WithValue(ctx, util.ContextKeyImageGenerationPhaseHook, func(phase string) {
+		h.updateImageGenerationTask(taskID, func(task *imageGenerationTask) {
+			if phase != "" {
+				task.Phase = phase
+			}
+		})
+	})
+
+	result, err := h.executeImageGenerationTest(ctx, payload, alt)
 	if err != nil {
 		status := http.StatusBadGateway
 		if statusErr, ok := err.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
 			status = statusErr.StatusCode()
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		errorResponse := imageGenerationErrorResponse(err, "upstream_error")
+		h.updateImageGenerationTask(taskID, func(task *imageGenerationTask) {
+			task.Status = "failed"
+			task.Error = gin.H{
+				"status": status,
+				"body":   errorResponse,
+			}
+		})
 		return
 	}
 
-	c.Data(http.StatusOK, "application/json; charset=utf-8", resp.Payload)
+	h.updateImageGenerationTask(taskID, func(task *imageGenerationTask) {
+		task.Status = "succeeded"
+		task.Phase = "completed"
+		task.Result = append(json.RawMessage(nil), result...)
+	})
+}
+
+func (h *Handler) executeImageGenerationTest(ctx context.Context, payload []byte, alt string) ([]byte, error) {
+	imageCount, err := imageGenerationRequestCount(payload)
+	if err != nil {
+		return nil, err
+	}
+	payloads := make([][]byte, 0, imageCount)
+	for i := 0; i < imageCount; i++ {
+		execPayload := payload
+		if imageCount > 1 {
+			var setErr error
+			execPayload, setErr = setImageGenerationRequestCount(payload, 1)
+			if setErr != nil {
+				return nil, fmt.Errorf("invalid image generation request")
+			}
+		}
+		resp, execErr := h.authManager.Execute(ctx, []string{"codex"}, coreexecutor.Request{
+			Model:   "",
+			Payload: execPayload,
+			Format:  sdktranslator.FromString("openai"),
+		}, coreexecutor.Options{
+			Alt:          alt,
+			SourceFormat: sdktranslator.FromString("openai"),
+			Metadata: map[string]any{
+				coreexecutor.SinglePickMetadataKey: true,
+			},
+		})
+		if execErr != nil {
+			return nil, execErr
+		}
+		payloads = append(payloads, resp.Payload)
+	}
+	mergedPayload, err := mergeImageGenerationResponses(payloads)
+	if err != nil {
+		return nil, err
+	}
+
+	return mergedPayload, nil
+}
+
+func (h *Handler) createImageGenerationTask() *imageGenerationTask {
+	h.purgeImageGenerationTasks()
+	now := time.Now()
+	task := &imageGenerationTask{
+		ID:        uuid.NewString(),
+		Status:    "queued",
+		Phase:     "queued",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	h.imageTasksMu.Lock()
+	if h.imageTasks == nil {
+		h.imageTasks = make(map[string]*imageGenerationTask)
+	}
+	h.imageTasks[task.ID] = task
+	h.imageTasksMu.Unlock()
+	return task
+}
+
+func (h *Handler) getImageGenerationTask(taskID string) *imageGenerationTask {
+	if h == nil {
+		return nil
+	}
+	h.imageTasksMu.Lock()
+	defer h.imageTasksMu.Unlock()
+	task := h.imageTasks[taskID]
+	if task == nil {
+		return nil
+	}
+	copyTask := *task
+	if task.Result != nil {
+		copyTask.Result = append(json.RawMessage(nil), task.Result...)
+	}
+	if task.Error != nil {
+		copyTask.Error = cloneGinMap(task.Error)
+	}
+	return &copyTask
+}
+
+func (h *Handler) updateImageGenerationTask(taskID string, update func(*imageGenerationTask)) {
+	if h == nil || update == nil {
+		return
+	}
+	h.imageTasksMu.Lock()
+	defer h.imageTasksMu.Unlock()
+	task := h.imageTasks[taskID]
+	if task == nil {
+		return
+	}
+	update(task)
+	task.UpdatedAt = time.Now()
+}
+
+func (h *Handler) purgeImageGenerationTasks() {
+	if h == nil {
+		return
+	}
+	cutoff := time.Now().Add(-imageGenerationTaskTTL)
+	h.imageTasksMu.Lock()
+	defer h.imageTasksMu.Unlock()
+	for id, task := range h.imageTasks {
+		if task == nil || task.UpdatedAt.Before(cutoff) {
+			delete(h.imageTasks, id)
+		}
+	}
+}
+
+func (h *Handler) imageGenerationTaskSnapshot(task *imageGenerationTask) gin.H {
+	if task == nil {
+		return gin.H{}
+	}
+	body := gin.H{
+		"task_id":    task.ID,
+		"status":     task.Status,
+		"phase":      task.Phase,
+		"created_at": task.CreatedAt,
+		"updated_at": task.UpdatedAt,
+		"elapsed_ms": time.Since(task.CreatedAt).Milliseconds(),
+	}
+	if task.Result != nil {
+		var result any
+		if err := json.Unmarshal(task.Result, &result); err == nil {
+			body["result"] = result
+		}
+	}
+	if task.Error != nil {
+		body["error"] = task.Error
+	}
+	return body
+}
+
+func cloneGinMap(src gin.H) gin.H {
+	if src == nil {
+		return nil
+	}
+	dst := make(gin.H, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+type upstreamErrorBodyProvider interface {
+	UpstreamErrorBody() []byte
+}
+
+func imageGenerationErrorResponse(err error, errorType string) gin.H {
+	msg := ""
+	if err != nil {
+		msg = strings.TrimSpace(err.Error())
+	}
+	if msg == "" {
+		msg = "Upstream image generation request failed."
+	}
+	typ := strings.TrimSpace(errorType)
+	if typ == "" {
+		typ = "upstream_error"
+	}
+	errorBody := gin.H{
+		"message": msg,
+		"type":    typ,
+	}
+	if upstreamErr, ok := err.(upstreamErrorBodyProvider); ok {
+		upstreamBody := strings.TrimSpace(string(upstreamErr.UpstreamErrorBody()))
+		if upstreamBody != "" {
+			errorBody["upstream"] = parseImageGenerationUpstreamBody(upstreamBody)
+		}
+	}
+	return gin.H{"error": errorBody}
+}
+
+func parseImageGenerationUpstreamBody(body string) any {
+	var decoded any
+	if err := json.Unmarshal([]byte(body), &decoded); err == nil {
+		return decoded
+	}
+	return body
+}
+
+func imageGenerationRequestCount(payload []byte) (int, error) {
+	var body struct {
+		N int `json:"n"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return 0, fmt.Errorf("invalid image generation request")
+	}
+	if body.N == 0 {
+		return 1, nil
+	}
+	if body.N < 1 || body.N > 4 {
+		return 0, fmt.Errorf("n must be between 1 and 4")
+	}
+	return body.N, nil
+}
+
+func setImageGenerationRequestCount(payload []byte, n int) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil, err
+	}
+	body["n"] = n
+	return json.Marshal(body)
+}
+
+func mergeImageGenerationResponses(payloads [][]byte) ([]byte, error) {
+	if len(payloads) == 0 {
+		return nil, fmt.Errorf("image generation returned no responses")
+	}
+	if len(payloads) == 1 {
+		return payloads[0], nil
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(payloads[0], &merged); err != nil {
+		return nil, fmt.Errorf("parse image generation response: %w", err)
+	}
+	data := make([]json.RawMessage, 0, len(payloads))
+	for _, payload := range payloads {
+		var item struct {
+			Data []json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(payload, &item); err != nil {
+			return nil, fmt.Errorf("parse image generation response: %w", err)
+		}
+		data = append(data, item.Data...)
+	}
+	encodedData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("encode image generation response: %w", err)
+	}
+	merged["data"] = encodedData
+	return json.Marshal(merged)
 }
 
 func parseImageGenerationTestPayload(c *gin.Context) ([]byte, string, error) {
 	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		return parseImageGenerationMultipartPayload(c)
+		return nil, "", fmt.Errorf("image edits are temporarily disabled")
 	}
 
 	var body struct {
@@ -138,6 +425,9 @@ func parseImageGenerationMultipartPayload(c *gin.Context) ([]byte, string, error
 	}
 	if len(files) == 0 {
 		return nil, "", fmt.Errorf("image file is required")
+	}
+	if len(files) > imageMaxUploads {
+		return nil, "", fmt.Errorf("image edit supports at most %d images", imageMaxUploads)
 	}
 	uploads := make([]map[string]any, 0, len(files))
 	for _, fileHeader := range files {
