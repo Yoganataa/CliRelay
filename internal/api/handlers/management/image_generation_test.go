@@ -24,6 +24,19 @@ type managementImageExecutor struct {
 	payloads []string
 	metadata map[string]any
 	calls    int
+	err      error
+}
+
+type managementUpstreamStatusError struct {
+	code         int
+	message      string
+	upstreamBody []byte
+}
+
+func (e managementUpstreamStatusError) Error() string   { return e.message }
+func (e managementUpstreamStatusError) StatusCode() int { return e.code }
+func (e managementUpstreamStatusError) UpstreamErrorBody() []byte {
+	return append([]byte(nil), e.upstreamBody...)
 }
 
 func (e *managementImageExecutor) Identifier() string { return "codex" }
@@ -35,6 +48,9 @@ func (e *managementImageExecutor) Execute(ctx context.Context, auth *coreauth.Au
 	e.payload = string(req.Payload)
 	e.payloads = append(e.payloads, e.payload)
 	e.metadata = opts.Metadata
+	if e.err != nil {
+		return coreexecutor.Response{}, e.err
+	}
 	b64 := "dGVzdA=="
 	if e.calls > 1 {
 		b64 = "dGVzdA" + strconv.Itoa(e.calls) + "="
@@ -56,6 +72,121 @@ func (e *managementImageExecutor) CountTokens(context.Context, *coreauth.Auth, c
 
 func (e *managementImageExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
 	return nil, errors.New("not implemented")
+}
+
+func TestPostImageGenerationTestReturnsStructuredUpstreamError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &managementImageExecutor{err: errors.New("openai image conversation returned no downloadable images")}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"access_token": "token"},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	h := &Handler{authManager: manager}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/image-generation/test", strings.NewReader(`{
+		"model":"gpt-image-2",
+		"prompt":"safe test prompt",
+		"size":"1024x1792",
+		"quality":"medium",
+		"n":1
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.PostImageGenerationTest(c)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if body.Error.Type != "upstream_error" {
+		t.Fatalf("error.type = %q, want upstream_error", body.Error.Type)
+	}
+	if !strings.Contains(body.Error.Message, "no downloadable images") {
+		t.Fatalf("error.message = %q, want upstream failure message", body.Error.Message)
+	}
+}
+
+func TestPostImageGenerationTestIncludesOfficialUpstreamErrorBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &managementImageExecutor{
+		err: managementUpstreamStatusError{
+			code:    http.StatusTooManyRequests,
+			message: "rate limit exceeded",
+			upstreamBody: []byte(
+				`{"error":{"message":"rate limit exceeded","type":"rate_limit_error","code":"rate_limit"}}`,
+			),
+		},
+	}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"access_token": "token"},
+	}); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+
+	h := &Handler{authManager: manager}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/image-generation/test", strings.NewReader(`{
+		"model":"gpt-image-2",
+		"prompt":"safe test prompt"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	c.Request = req
+
+	h.PostImageGenerationTest(c)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Message  string `json:"message"`
+			Type     string `json:"type"`
+			Upstream struct {
+				Error struct {
+					Message string `json:"message"`
+					Type    string `json:"type"`
+					Code    string `json:"code"`
+				} `json:"error"`
+			} `json:"upstream"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if body.Error.Type != "upstream_error" {
+		t.Fatalf("error.type = %q, want upstream_error", body.Error.Type)
+	}
+	if body.Error.Upstream.Error.Type != "rate_limit_error" {
+		t.Fatalf("upstream.error.type = %q, want rate_limit_error", body.Error.Upstream.Error.Type)
+	}
+	if body.Error.Upstream.Error.Code != "rate_limit" {
+		t.Fatalf("upstream.error.code = %q, want rate_limit", body.Error.Upstream.Error.Code)
+	}
 }
 
 func TestPostImageGenerationTestExecutesCodexImageAlt(t *testing.T) {

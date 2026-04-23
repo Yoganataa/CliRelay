@@ -402,8 +402,78 @@ func TestUsageReporterTrackFailureStoresErrorContent(t *testing.T) {
 			if !strings.Contains(record.InputContent, "draw a fox") {
 				t.Fatalf("InputContent = %q, want request payload", record.InputContent)
 			}
-			if !strings.Contains(record.OutputContent, "no downloadable images") {
-				t.Fatalf("OutputContent = %q, want failure message", record.OutputContent)
+			var body struct {
+				Error struct {
+					Message string `json:"message"`
+					Type    string `json:"type"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(record.OutputContent), &body); err != nil {
+				t.Fatalf("OutputContent = %q, want structured json error: %v", record.OutputContent, err)
+			}
+			if body.Error.Type != "upstream_error" {
+				t.Fatalf("error.type = %q, want upstream_error", body.Error.Type)
+			}
+			if !strings.Contains(body.Error.Message, "no downloadable images") {
+				t.Fatalf("error.message = %q, want failure message", body.Error.Message)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for failure usage record")
+		}
+	}
+}
+
+func TestUsageReporterTrackFailureStoresOfficialUpstreamBody(t *testing.T) {
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-official-failure",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+	}
+	reporter := newUsageReporter(context.Background(), "codex", "gpt-image-2", auth)
+	reporter.setInputContent(`{"model":"gpt-image-2","prompt":"draw a fox"}`)
+	errValue := error(statusErr{
+		code:         http.StatusTooManyRequests,
+		msg:          "rate limit exceeded",
+		upstreamBody: []byte(`{"error":{"message":"rate limit exceeded","type":"rate_limit_error","param":null,"code":"rate_limit"}}`),
+	})
+
+	reporter.trackFailure(context.Background(), &errValue)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Model != "gpt-image-2" {
+				continue
+			}
+			var body struct {
+				Error struct {
+					Message  string `json:"message"`
+					Type     string `json:"type"`
+					Upstream struct {
+						Error struct {
+							Message string `json:"message"`
+							Type    string `json:"type"`
+							Code    string `json:"code"`
+						} `json:"error"`
+					} `json:"upstream"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(record.OutputContent), &body); err != nil {
+				t.Fatalf("OutputContent = %q, want structured json error: %v", record.OutputContent, err)
+			}
+			if body.Error.Type != "upstream_error" {
+				t.Fatalf("error.type = %q, want upstream_error", body.Error.Type)
+			}
+			if body.Error.Upstream.Error.Type != "rate_limit_error" {
+				t.Fatalf("upstream.error.type = %q, want rate_limit_error", body.Error.Upstream.Error.Type)
+			}
+			if body.Error.Upstream.Error.Code != "rate_limit" {
+				t.Fatalf("upstream.error.code = %q, want rate_limit", body.Error.Upstream.Error.Code)
 			}
 			return
 		case <-deadline:

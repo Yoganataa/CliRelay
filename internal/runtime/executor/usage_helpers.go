@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -134,11 +135,51 @@ func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
 	if *errPtr != nil {
 		r.contentMu.Lock()
 		if r.outputContent == "" && r.outputBuilder.Len() == 0 && r.outputFile == nil {
-			r.outputContent = (*errPtr).Error()
+			r.outputContent = structuredUpstreamErrorJSON(*errPtr)
 		}
 		r.contentMu.Unlock()
 		r.publishFailure(ctx)
 	}
+}
+
+type upstreamBodyError interface {
+	UpstreamErrorBody() []byte
+}
+
+func structuredUpstreamErrorJSON(err error) string {
+	msg := ""
+	if err != nil {
+		msg = strings.TrimSpace(err.Error())
+	}
+	if msg == "" {
+		msg = "Upstream request failed."
+	}
+	errorBody := map[string]any{
+		"message": msg,
+		"type":    "upstream_error",
+	}
+	if upstreamErr, ok := err.(upstreamBodyError); ok {
+		upstreamBody := strings.TrimSpace(string(upstreamErr.UpstreamErrorBody()))
+		if upstreamBody != "" {
+			errorBody["upstream"] = parseStructuredUpstreamBody(upstreamBody)
+		}
+	}
+	body := map[string]any{
+		"error": errorBody,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return `{"error":{"message":"Upstream request failed.","type":"upstream_error"}}`
+	}
+	return string(data)
+}
+
+func parseStructuredUpstreamBody(body string) any {
+	var decoded any
+	if err := json.Unmarshal([]byte(body), &decoded); err == nil {
+		return decoded
+	}
+	return body
 }
 
 func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool) {

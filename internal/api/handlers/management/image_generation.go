@@ -71,7 +71,7 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 			if statusErr, ok := execErr.(coreexecutor.StatusError); ok && statusErr.StatusCode() > 0 {
 				status = statusErr.StatusCode()
 			}
-			c.JSON(status, gin.H{"error": execErr.Error()})
+			c.JSON(status, imageGenerationErrorResponse(execErr, "upstream_error"))
 			return
 		}
 		payloads = append(payloads, resp.Payload)
@@ -83,6 +83,43 @@ func (h *Handler) PostImageGenerationTest(c *gin.Context) {
 	}
 
 	c.Data(http.StatusOK, "application/json; charset=utf-8", mergedPayload)
+}
+
+type upstreamErrorBodyProvider interface {
+	UpstreamErrorBody() []byte
+}
+
+func imageGenerationErrorResponse(err error, errorType string) gin.H {
+	msg := ""
+	if err != nil {
+		msg = strings.TrimSpace(err.Error())
+	}
+	if msg == "" {
+		msg = "Upstream image generation request failed."
+	}
+	typ := strings.TrimSpace(errorType)
+	if typ == "" {
+		typ = "upstream_error"
+	}
+	errorBody := gin.H{
+		"message": msg,
+		"type":    typ,
+	}
+	if upstreamErr, ok := err.(upstreamErrorBodyProvider); ok {
+		upstreamBody := strings.TrimSpace(string(upstreamErr.UpstreamErrorBody()))
+		if upstreamBody != "" {
+			errorBody["upstream"] = parseImageGenerationUpstreamBody(upstreamBody)
+		}
+	}
+	return gin.H{"error": errorBody}
+}
+
+func parseImageGenerationUpstreamBody(body string) any {
+	var decoded any
+	if err := json.Unmarshal([]byte(body), &decoded); err == nil {
+		return decoded
+	}
+	return body
 }
 
 func imageGenerationRequestCount(payload []byte) (int, error) {

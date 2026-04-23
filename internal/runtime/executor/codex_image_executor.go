@@ -1366,7 +1366,7 @@ func codexImageStatusErrWithBody(statusCode int, body []byte, fallback string) s
 	if message == "" {
 		message = fallback
 	}
-	return statusErr{code: statusCode, msg: message}
+	return statusErr{code: statusCode, msg: message, upstreamBody: append([]byte(nil), body...)}
 }
 
 func extractCodexImageErrorMessage(body []byte) string {
