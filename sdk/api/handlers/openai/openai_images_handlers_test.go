@@ -202,7 +202,7 @@ func TestOpenAIImagesGenerationsSplitsMultipleImagesIntoSingleImageExecutions(t 
 	}
 }
 
-func TestOpenAIImagesEditsReturnsTemporarilyDisabled(t *testing.T) {
+func TestOpenAIImagesEditsExecutesCodexImageEditsAlt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &imageCaptureExecutor{}
@@ -229,12 +229,20 @@ func TestOpenAIImagesEditsReturnsTemporarilyDisabled(t *testing.T) {
 	_ = writer.WriteField("prompt", "make it blue")
 	_ = writer.WriteField("size", "1024x1792")
 	_ = writer.WriteField("quality", "medium")
+	_ = writer.WriteField("background", "transparent")
+	_ = writer.WriteField("output_format", "webp")
+	_ = writer.WriteField("input_fidelity", "high")
 	_ = writer.WriteField("n", "2")
 	part, err := writer.CreateFormFile("image", "icon.png")
 	if err != nil {
 		t.Fatalf("CreateFormFile: %v", err)
 	}
 	_, _ = part.Write([]byte("hello"))
+	maskPart, err := writer.CreateFormFile("mask", "mask.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile(mask): %v", err)
+	}
+	_, _ = maskPart.Write([]byte("mask-bytes"))
 	_ = writer.Close()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
@@ -242,13 +250,28 @@ func TestOpenAIImagesEditsReturnsTemporarilyDisabled(t *testing.T) {
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d, body=%s", resp.Code, http.StatusNotImplemented, resp.Body.String())
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", resp.Code, http.StatusOK, resp.Body.String())
 	}
-	if executor.calls != 0 {
-		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	if executor.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2", executor.calls)
 	}
-	if !strings.Contains(resp.Body.String(), "image edits are temporarily disabled") {
-		t.Fatalf("body = %s, want disabled message", resp.Body.String())
+	if executor.alt != "images/edits" {
+		t.Fatalf("alt = %q, want %q", executor.alt, "images/edits")
+	}
+	if !strings.Contains(executor.payload, `"output_format":"webp"`) {
+		t.Fatalf("payload = %s, want output_format", executor.payload)
+	}
+	if !strings.Contains(executor.payload, `"background":"transparent"`) {
+		t.Fatalf("payload = %s, want background", executor.payload)
+	}
+	if !strings.Contains(executor.payload, `"input_fidelity":"high"`) {
+		t.Fatalf("payload = %s, want input_fidelity", executor.payload)
+	}
+	if !strings.Contains(executor.payload, `"mask_file"`) {
+		t.Fatalf("payload = %s, want mask_file", executor.payload)
+	}
+	if strings.Count(executor.payload, `"data_base64"`) < 2 {
+		t.Fatalf("payload = %s, want base64 encoded image and mask uploads", executor.payload)
 	}
 }

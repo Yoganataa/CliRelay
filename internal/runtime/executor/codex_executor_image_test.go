@@ -341,37 +341,101 @@ func TestCodexExecutorExecuteImageGenerationSkipsPollingWhenStreamAlreadyHasInli
 	}
 }
 
-func TestCodexExecutorRejectsImageEditsWhileDisabled(t *testing.T) {
+func TestCodexExecutorExecuteImageEditsViaResponses(t *testing.T) {
+	var lastBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		lastBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002,\"tools\":[{\"type\":\"image_generation\",\"model\":\"gpt-image-2\",\"background\":\"transparent\",\"output_format\":\"webp\",\"quality\":\"high\"}]}}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000002,\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"ZWRpdGVk\",\"revised_prompt\":\"turn it green\",\"output_format\":\"webp\",\"quality\":\"high\"}]}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
 	executor := NewCodexExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{
 		ID:       "codex-auth",
 		Provider: "codex",
 		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
 		Metadata: map[string]any{
 			"access_token": "token",
+			"account_id":   "account-1",
 		},
 	}
 
-	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "gpt-image-2",
-		Payload: []byte(`{"model":"gpt-image-2","prompt":"turn it green","image_files":[{"file_name":"icon.png","content_type":"image/png","data_base64":"aGVsbG8="}]}`),
-		Format:  sdktranslator.FromString("openai"),
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model: "gpt-image-2",
+		Payload: []byte(`{
+			"model":"gpt-image-2",
+			"prompt":"turn it green",
+			"background":"transparent",
+			"output_format":"webp",
+			"quality":"high",
+			"input_fidelity":"high",
+			"image_files":[{"file_name":"icon.png","content_type":"image/png","data_base64":"aGVsbG8="}],
+			"mask_file":{"file_name":"mask.png","content_type":"image/png","data_base64":"bWFzaw=="}
+		}`),
+		Format: sdktranslator.FromString("openai"),
 	}, cliproxyexecutor.Options{
-		Alt:          "images/generations",
+		Alt:          "images/edits",
 		SourceFormat: sdktranslator.FromString("openai"),
 	})
-	if err == nil {
-		t.Fatal("Execute() error = nil, want disabled image edits error")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "image edits are temporarily disabled") {
-		t.Fatalf("error = %v, want disabled image edits message", err)
+
+	if !strings.Contains(lastBody, `"tool_choice":{"type":"image_generation"}`) {
+		t.Fatalf("request body = %s, want image_generation tool choice", lastBody)
 	}
-	statusErr, ok := err.(cliproxyexecutor.StatusError)
-	if !ok {
-		t.Fatalf("error type = %T, want StatusError", err)
+	if !strings.Contains(lastBody, `"model":"gpt-5.4-mini"`) {
+		t.Fatalf("request body = %s, want responses wrapper model", lastBody)
 	}
-	if statusErr.StatusCode() != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d", statusErr.StatusCode(), http.StatusNotImplemented)
+	if !strings.Contains(lastBody, `"action":"edit"`) {
+		t.Fatalf("request body = %s, want edit action", lastBody)
+	}
+	if !strings.Contains(lastBody, `"output_format":"webp"`) {
+		t.Fatalf("request body = %s, want output_format", lastBody)
+	}
+	if !strings.Contains(lastBody, `"background":"transparent"`) {
+		t.Fatalf("request body = %s, want background", lastBody)
+	}
+	if strings.Contains(lastBody, `"input_fidelity"`) {
+		t.Fatalf("request body = %s, want input_fidelity stripped like sub2api", lastBody)
+	}
+	if !strings.Contains(lastBody, `"input_image_mask":{"image_url":"data:image/png;base64,bWFzaw=="}`) {
+		t.Fatalf("request body = %s, want input_image_mask data URL", lastBody)
+	}
+	if !strings.Contains(lastBody, `"type":"input_image"`) || !strings.Contains(lastBody, `"image_url":"data:image/png;base64,aGVsbG8="`) {
+		t.Fatalf("request body = %s, want uploaded image as input_image data URL", lastBody)
+	}
+
+	var payload struct {
+		Created int64 `json:"created"`
+		Data    []struct {
+			B64JSON       string `json:"b64_json"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if len(payload.Data) != 1 {
+		t.Fatalf("data length = %d, want 1", len(payload.Data))
+	}
+	if payload.Data[0].B64JSON != "ZWRpdGVk" {
+		t.Fatalf("b64_json = %q, want ZWRpdGVk", payload.Data[0].B64JSON)
+	}
+	if payload.Data[0].RevisedPrompt != "turn it green" {
+		t.Fatalf("revised_prompt = %q, want turn it green", payload.Data[0].RevisedPrompt)
 	}
 }
 

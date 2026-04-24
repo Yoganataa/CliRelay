@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,7 +46,11 @@ func (h *OpenAIImagesAPIHandler) Generations(c *gin.Context) {
 }
 
 func (h *OpenAIImagesAPIHandler) Edits(c *gin.Context) {
-	writeOpenAIImagesError(c, http.StatusNotImplemented, "not_supported", "image edits are temporarily disabled")
+	rawJSON, ok := readOpenAIImageEditRequest(c)
+	if !ok {
+		return
+	}
+	h.executeImages(c, rawJSON, openAIImageEditsAlt)
 }
 
 func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, alt string) {
@@ -202,9 +207,18 @@ func buildOpenAIImageEditPayloadFromMultipart(c *gin.Context) ([]byte, error) {
 		"model":  firstOpenAIImagesFormValue(form.Value, "model", "gpt-image-2"),
 		"prompt": firstOpenAIImagesFormValue(form.Value, "prompt", ""),
 	}
-	for _, field := range []string{"size", "quality", "response_format"} {
+	for _, field := range []string{"size", "quality", "response_format", "background", "output_format", "moderation", "input_fidelity", "style"} {
 		if value := firstOpenAIImagesFormValue(form.Value, field, ""); value != "" {
 			payload[field] = value
+		}
+	}
+	for _, field := range []string{"output_compression", "partial_images"} {
+		if value := firstOpenAIImagesFormValue(form.Value, field, ""); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("%s must be a positive integer", field)
+			}
+			payload[field] = parsed
 		}
 	}
 	if value := firstOpenAIImagesFormValue(form.Value, "n", ""); value != "" {
@@ -257,7 +271,47 @@ func buildOpenAIImageEditPayloadFromMultipart(c *gin.Context) ([]byte, error) {
 		})
 	}
 	payload["image_files"] = uploads
+	if maskFiles := form.File["mask"]; len(maskFiles) > 0 && maskFiles[0] != nil {
+		maskFile, err := buildOpenAIImageUploadPayload(maskFiles[0])
+		if err != nil {
+			return nil, err
+		}
+		payload["mask_file"] = maskFile
+	}
 	return json.Marshal(payload)
+}
+
+func buildOpenAIImageUploadPayload(fileHeader *multipart.FileHeader) (map[string]any, error) {
+	if fileHeader == nil {
+		return nil, fmt.Errorf("image file is required")
+	}
+	if fileHeader.Size > openAIImageMaxUploadSize {
+		return nil, fmt.Errorf("image file is too large")
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		return nil, fmt.Errorf("read image file: %w", err)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, openAIImageMaxUploadSize+1))
+	_ = file.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read image file: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("image file is empty")
+	}
+	if len(data) > openAIImageMaxUploadSize {
+		return nil, fmt.Errorf("image file is too large")
+	}
+	contentType := strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return map[string]any{
+		"file_name":    fileHeader.Filename,
+		"content_type": contentType,
+		"data_base64":  base64.StdEncoding.EncodeToString(data),
+	}, nil
 }
 
 func firstOpenAIImagesFormValue(values map[string][]string, key, fallback string) string {

@@ -451,7 +451,7 @@ func waitForImageGenerationTask(t *testing.T, h *Handler, taskID string, done fu
 	}
 }
 
-func TestPostImageGenerationTestRejectsMultipartImageEditsWhileDisabled(t *testing.T) {
+func TestPostImageGenerationTestAcceptsMultipartImageEdits(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &managementImageExecutor{}
@@ -472,12 +472,19 @@ func TestPostImageGenerationTestRejectsMultipartImageEditsWhileDisabled(t *testi
 	_ = writer.WriteField("prompt", "make it blue")
 	_ = writer.WriteField("size", "1792x1024")
 	_ = writer.WriteField("quality", "low")
+	_ = writer.WriteField("background", "transparent")
+	_ = writer.WriteField("output_format", "webp")
 	_ = writer.WriteField("n", "2")
 	part, err := writer.CreateFormFile("image", "icon.png")
 	if err != nil {
 		t.Fatalf("CreateFormFile: %v", err)
 	}
 	_, _ = part.Write([]byte("hello"))
+	maskPart, err := writer.CreateFormFile("mask", "mask.png")
+	if err != nil {
+		t.Fatalf("CreateFormFile(mask): %v", err)
+	}
+	_, _ = maskPart.Write([]byte("mask-bytes"))
 	_ = writer.Close()
 
 	h := &Handler{authManager: manager}
@@ -489,14 +496,41 @@ func TestPostImageGenerationTestRejectsMultipartImageEditsWhileDisabled(t *testi
 
 	h.PostImageGenerationTest(c)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
 	}
-	if executor.calls != 0 {
-		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	var created struct {
+		TaskID string `json:"task_id"`
 	}
-	if !strings.Contains(rec.Body.String(), "image edits are temporarily disabled") {
-		t.Fatalf("body = %s, want disabled message", rec.Body.String())
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("Unmarshal create task response: %v", err)
+	}
+
+	var polled struct {
+		Status string `json:"status"`
+		Result struct {
+			Data []struct {
+				B64JSON string `json:"b64_json"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	waitForImageGenerationTask(t, h, created.TaskID, func(body []byte) bool {
+		if err := json.Unmarshal(body, &polled); err != nil {
+			t.Fatalf("Unmarshal poll response: %v", err)
+		}
+		return polled.Status == "succeeded"
+	})
+	if executor.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2", executor.calls)
+	}
+	if executor.alt != imageEditsAlt {
+		t.Fatalf("alt = %q, want %q", executor.alt, imageEditsAlt)
+	}
+	if !strings.Contains(executor.payload, `"mask_file"`) {
+		t.Fatalf("payload = %s, want mask_file", executor.payload)
+	}
+	if !strings.Contains(executor.payload, `"output_format":"webp"`) {
+		t.Fatalf("payload = %s, want output_format", executor.payload)
 	}
 }
 

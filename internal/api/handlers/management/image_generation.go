@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"sort"
 	"strconv"
@@ -349,7 +350,7 @@ func parseImageGenerationTestPayload(c *gin.Context) ([]byte, string, error) {
 	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		return nil, "", fmt.Errorf("image edits are temporarily disabled")
+		return parseImageGenerationMultipartPayload(c)
 	}
 
 	var body struct {
@@ -410,6 +411,20 @@ func parseImageGenerationMultipartPayload(c *gin.Context) ([]byte, string, error
 	if quality := firstImageGenerationFormValue(form.Value, "quality", ""); quality != "" {
 		payload["quality"] = quality
 	}
+	for _, field := range []string{"background", "output_format", "moderation", "input_fidelity", "style"} {
+		if value := firstImageGenerationFormValue(form.Value, field, ""); value != "" {
+			payload[field] = value
+		}
+	}
+	for _, field := range []string{"output_compression", "partial_images"} {
+		if value := firstImageGenerationFormValue(form.Value, field, ""); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 0 {
+				return nil, "", fmt.Errorf("%s must be a positive integer", field)
+			}
+			payload[field] = parsed
+		}
+	}
 	if value := firstImageGenerationFormValue(form.Value, "n", ""); value != "" {
 		n, err := strconv.Atoi(value)
 		if err != nil || n <= 0 {
@@ -456,8 +471,45 @@ func parseImageGenerationMultipartPayload(c *gin.Context) ([]byte, string, error
 		})
 	}
 	payload["image_files"] = uploads
+	if maskFiles := form.File["mask"]; len(maskFiles) > 0 && maskFiles[0] != nil {
+		maskPayload, err := buildImageGenerationUploadPayload(maskFiles[0])
+		if err != nil {
+			return nil, "", err
+		}
+		payload["mask_file"] = maskPayload
+	}
 	data, _ := json.Marshal(payload)
 	return data, imageEditsAlt, nil
+}
+
+func buildImageGenerationUploadPayload(fileHeader *multipart.FileHeader) (map[string]any, error) {
+	if fileHeader == nil {
+		return nil, fmt.Errorf("image file is required")
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		return nil, fmt.Errorf("read image file: %w", err)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, (20<<20)+1))
+	_ = file.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read image file: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("image file is empty")
+	}
+	if len(data) > 20<<20 {
+		return nil, fmt.Errorf("image file is too large")
+	}
+	contentType := strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return map[string]any{
+		"file_name":    fileHeader.Filename,
+		"content_type": contentType,
+		"data_base64":  base64.StdEncoding.EncodeToString(data),
+	}, nil
 }
 
 func firstImageGenerationFormValue(values map[string][]string, key, fallback string) string {
