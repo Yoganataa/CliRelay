@@ -175,10 +175,12 @@ type KimiHeaderDefaults struct {
 }
 
 const (
-	DefaultCodexFingerprintUserAgent     = "codex_cli_rs/0.120.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
-	DefaultCodexFingerprintVersion       = "0.120.0"
-	DefaultCodexFingerprintOriginator    = "codex_cli_rs"
-	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-04"
+	// Defaults are intentionally aligned with upstream CLIProxyAPI's codex-tui behavior.
+	// Update these when upstream codex-tui identity changes.
+	DefaultCodexFingerprintUserAgent     = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+	DefaultCodexFingerprintVersion       = ""
+	DefaultCodexFingerprintOriginator    = "codex-tui"
+	DefaultCodexFingerprintWebsocketBeta = "responses_websockets=2026-02-06"
 	DefaultCodexFingerprintSessionMode   = "per-request"
 )
 
