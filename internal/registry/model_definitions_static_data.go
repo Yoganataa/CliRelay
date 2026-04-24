@@ -879,6 +879,16 @@ func GetOpenAIModels() []*ModelInfo {
 			Description:         "Text-to-image generation model.",
 			SupportedParameters: []string{"prompt", "size", "n", "response_format"},
 		},
+		{
+			ID:                  "gptimage-2",
+			Object:              "model",
+			OwnedBy:             "openai",
+			Type:                "openai",
+			Version:             "gpt-image-2",
+			DisplayName:         "GPT Image 2 (Responses Compat)",
+			Description:         "Cherry Studio compatibility alias for GPT Image 2 that routes through the Responses API flow.",
+			SupportedParameters: []string{"prompt", "size", "n", "response_format"},
+		},
 	}
 }
 
