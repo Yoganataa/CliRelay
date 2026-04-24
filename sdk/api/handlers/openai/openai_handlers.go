@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -65,9 +64,8 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	// Filter to only include the 4 required fields: id, object, created, owned_by
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
-		modelID, _ := model["id"].(string)
 		filteredModel := map[string]any{
-			"id":     presentedImageModelID(c, strings.TrimSpace(modelID)),
+			"id":     model["id"],
 			"object": model["object"],
 		}
 

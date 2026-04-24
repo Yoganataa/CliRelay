@@ -49,7 +49,6 @@ func (h *OpenAIImagesAPIHandler) Edits(c *gin.Context) {
 }
 
 func (h *OpenAIImagesAPIHandler) executeImages(c *gin.Context, rawJSON []byte, alt string) {
-	rawJSON = normalizeImageAliasPayload(rawJSON)
 	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
 	if modelName == "" {
 		modelName = openAIImageModelID

@@ -63,27 +63,9 @@ func (h *OpenAIResponsesAPIHandler) Models() []map[string]any {
 // It returns a list of available AI models with their capabilities
 // and specifications in OpenAIResponses-compatible format.
 func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
-	models := h.Models()
-	if isCherryStudioRequest(c) {
-		rewritten := make([]map[string]any, 0, len(models))
-		for _, model := range models {
-			if model == nil {
-				continue
-			}
-			cloned := make(map[string]any, len(model))
-			for key, value := range model {
-				cloned[key] = value
-			}
-			if modelID, _ := cloned["id"].(string); modelID != "" {
-				cloned["id"] = presentedImageModelID(c, modelID)
-			}
-			rewritten = append(rewritten, cloned)
-		}
-		models = rewritten
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   models,
+		"data":   h.Models(),
 	})
 }
 
@@ -98,7 +80,6 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rawJSON = normalizeImageAliasPayload(rawJSON)
 	if strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String()) == openAIImageModelID {
 		h.handleImageResponse(c, rawJSON)
 		return
@@ -111,19 +92,6 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 	} else {
 		h.handleNonStreamingResponse(c, rawJSON)
 	}
-
-}
-
-func normalizeImageAliasPayload(rawJSON []byte) []byte {
-	modelName := normalizeImageModelAlias(gjson.GetBytes(rawJSON, "model").String())
-	if modelName == strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String()) {
-		return rawJSON
-	}
-	updated, err := sjson.SetBytes(rawJSON, "model", modelName)
-	if err != nil {
-		return rawJSON
-	}
-	return updated
 }
 
 func (h *OpenAIResponsesAPIHandler) handleImageResponse(c *gin.Context, rawJSON []byte) {
