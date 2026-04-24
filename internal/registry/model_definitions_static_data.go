@@ -869,6 +869,16 @@ func GetOpenAIModels() []*ModelInfo {
 			SupportedParameters: []string{"tools"},
 			Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
 		},
+		{
+			ID:                  "gpt-image-2",
+			Object:              "model",
+			OwnedBy:             "openai",
+			Type:                "openai",
+			Version:             "gpt-image-2",
+			DisplayName:         "GPT Image 2",
+			Description:         "Text-to-image generation model.",
+			SupportedParameters: []string{"prompt", "size", "n", "response_format"},
+		},
 	}
 }
 
