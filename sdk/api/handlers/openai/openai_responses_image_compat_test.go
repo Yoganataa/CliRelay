@@ -60,11 +60,17 @@ func TestOpenAIResponsesGPTImage2StreamsMarkdownImage(t *testing.T) {
 	if !strings.Contains(responseBody, "event: response.output_text.delta") || !strings.Contains(responseBody, "data:image/png;base64,aGVsbG8=") {
 		t.Fatalf("response body = %s, want streamed markdown data image", responseBody)
 	}
+	if !strings.Contains(responseBody, `"type":"response.created"`) || !strings.Contains(responseBody, `"model":"gpt-image-2"`) {
+		t.Fatalf("response body = %s, want response.created chunk with model", responseBody)
+	}
 	if !strings.Contains(responseBody, "event: response.completed") {
 		t.Fatalf("response body = %s, want response.completed event", responseBody)
 	}
-	if !strings.Contains(responseBody, "event: response.done") {
-		t.Fatalf("response body = %s, want response.done event", responseBody)
+	if !strings.Contains(responseBody, `"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}`) {
+		t.Fatalf("response body = %s, want response.completed chunk with usage", responseBody)
+	}
+	if strings.Contains(responseBody, "event: response.done") {
+		t.Fatalf("response body = %s, want no response.done event for responses SSE compatibility", responseBody)
 	}
 	if !strings.Contains(responseBody, "data: [DONE]") {
 		t.Fatalf("response body = %s, want [DONE] marker", responseBody)
