@@ -11,7 +11,7 @@ func TestCodexStaticModelsIncludeCurrentCodexModels(t *testing.T) {
 		}
 	}
 
-	for _, id := range []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"} {
+	for _, id := range []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"} {
 		if !modelIDs[id] {
 			t.Fatalf("expected codex static models to include %q", id)
 		}
