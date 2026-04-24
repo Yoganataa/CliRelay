@@ -63,6 +63,12 @@ func TestOpenAIResponsesGPTImage2StreamsMarkdownImage(t *testing.T) {
 	if !strings.Contains(responseBody, "event: response.completed") {
 		t.Fatalf("response body = %s, want response.completed event", responseBody)
 	}
+	if !strings.Contains(responseBody, "event: response.done") {
+		t.Fatalf("response body = %s, want response.done event", responseBody)
+	}
+	if !strings.Contains(responseBody, "data: [DONE]") {
+		t.Fatalf("response body = %s, want [DONE] marker", responseBody)
+	}
 }
 
 func TestOpenAIResponsesGPTImage2ReturnsNonStreamingResponse(t *testing.T) {

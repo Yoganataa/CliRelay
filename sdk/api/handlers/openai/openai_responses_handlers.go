@@ -340,6 +340,16 @@ func openAIResponsesImageEvent(eventType string, sequence int, responseID string
 	return out
 }
 
+func openAIResponsesImageDoneEvent(sequence int, responseID string, createdAt int64, text string) []byte {
+	body := openAIResponsesImageEvent("response.done", sequence, responseID, createdAt, text, true)
+	body, _ = sjson.SetBytes(body, "response.usage", map[string]any{
+		"input_tokens":  0,
+		"output_tokens": 0,
+		"total_tokens":  0,
+	})
+	return body
+}
+
 func openAIResponsesWriteImageTextStream(c *gin.Context, flusher http.Flusher, responseID string, createdAt int64, text string) {
 	itemID := "msg_" + responseID
 	openAIResponsesWriteSSE(c, flusher, "response.output_item.added", mustMarshalJSON(map[string]any{"type": "response.output_item.added", "sequence_number": 2, "output_index": 0, "item": map[string]any{"id": itemID, "type": "message", "status": "in_progress", "content": []any{}, "role": "assistant"}}))
@@ -349,7 +359,8 @@ func openAIResponsesWriteImageTextStream(c *gin.Context, flusher http.Flusher, r
 	openAIResponsesWriteSSE(c, flusher, "response.content_part.done", mustMarshalJSON(map[string]any{"type": "response.content_part.done", "sequence_number": 6, "item_id": itemID, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "annotations": []any{}, "logprobs": []any{}, "text": text}}))
 	openAIResponsesWriteSSE(c, flusher, "response.output_item.done", mustMarshalJSON(map[string]any{"type": "response.output_item.done", "sequence_number": 7, "output_index": 0, "item": map[string]any{"id": itemID, "type": "message", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}, "logprobs": []any{}}}, "role": "assistant"}}))
 	openAIResponsesWriteSSE(c, flusher, "response.completed", openAIResponsesImageEvent("response.completed", 8, responseID, createdAt, text, true))
-	_, _ = c.Writer.Write([]byte("\n"))
+	openAIResponsesWriteSSE(c, flusher, "response.done", openAIResponsesImageDoneEvent(9, responseID, createdAt, text))
+	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
 }
 
