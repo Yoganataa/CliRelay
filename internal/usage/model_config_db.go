@@ -265,19 +265,30 @@ func mergeLegacyPricingIntoModelConfigs(db *sql.DB) {
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+
+	type legacyPricingRow struct {
+		modelID string
+		input   float64
+		output  float64
+		cached  float64
+	}
+
+	legacyRows := make([]legacyPricingRow, 0)
+	for rows.Next() {
+		var row legacyPricingRow
+		if err := rows.Scan(&row.modelID, &row.input, &row.output, &row.cached); err != nil {
+			continue
+		}
+		row.modelID = strings.TrimSpace(row.modelID)
+		if row.modelID == "" {
+			continue
+		}
+		legacyRows = append(legacyRows, row)
+	}
+	_ = rows.Close()
 
 	now := nowRFC3339()
-	for rows.Next() {
-		var modelID string
-		var input, output, cached float64
-		if err := rows.Scan(&modelID, &input, &output, &cached); err != nil {
-			continue
-		}
-		modelID = strings.TrimSpace(modelID)
-		if modelID == "" {
-			continue
-		}
+	for _, row := range legacyRows {
 		_, _ = db.Exec(
 			`INSERT INTO model_configs
 			 (model_id, owned_by, description, enabled, pricing_mode, input_price_per_million, output_price_per_million, cached_price_per_million, price_per_call, source, updated_at)
@@ -288,10 +299,10 @@ func mergeLegacyPricingIntoModelConfigs(db *sql.DB) {
 			   output_price_per_million = excluded.output_price_per_million,
 			   cached_price_per_million = excluded.cached_price_per_million,
 			   updated_at = excluded.updated_at`,
-			modelID,
-			input,
-			output,
-			cached,
+			row.modelID,
+			row.input,
+			row.output,
+			row.cached,
 			now,
 		)
 	}
