@@ -3,11 +3,16 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
@@ -74,6 +79,49 @@ func TestUsageReporterSpillsLargeStreamingOutputToTempFile(t *testing.T) {
 	}
 	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
 		t.Fatalf("expected temp file to be removed, stat err=%v", err)
+	}
+}
+
+func TestRequestDetailsCaptureUpstreamLogsWhenOnlyContentStorageEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hi"}`))
+	req.Header.Set("User-Agent", "codex-cli-test")
+	req.RemoteAddr = "203.0.113.9:45678"
+	ginCtx.Request = req
+	ctx := context.WithValue(req.Context(), util.ContextKeyGin, ginCtx)
+	cfg := &config.Config{}
+	cfg.RequestLog = false
+	cfg.RequestLogStorage.StoreContent = true
+
+	recordAPIRequest(ctx, cfg, upstreamRequestLog{
+		URL:     "https://api.example.test/v1/responses",
+		Method:  http.MethodPost,
+		Headers: http.Header{"X-Codex-Session-Id": []string{"session-plaintext"}},
+		Body:    []byte(`{"model":"gpt-test"}`),
+	})
+	recordAPIResponseMetadata(ctx, cfg, http.StatusOK, http.Header{"X-Request-Id": []string{"req-plaintext"}})
+	appendAPIResponseChunk(ctx, cfg, []byte(`{"id":"resp-test"}`))
+
+	var detail struct {
+		Upstream struct {
+			RequestLog string `json:"request_log"`
+		} `json:"upstream"`
+		Response struct {
+			UpstreamLog string `json:"upstream_log"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(buildRequestDetailContent(ctx)), &detail); err != nil {
+		t.Fatalf("unmarshal request details: %v", err)
+	}
+	if !strings.Contains(detail.Upstream.RequestLog, "https://api.example.test/v1/responses") {
+		t.Fatalf("upstream request log missing URL: %q", detail.Upstream.RequestLog)
+	}
+	if !strings.Contains(detail.Response.UpstreamLog, "X-Request-Id: req-plaintext") {
+		t.Fatalf("upstream response log missing headers: %q", detail.Response.UpstreamLog)
+	}
+	if !strings.Contains(detail.Response.UpstreamLog, `{"id":"resp-test"}`) {
+		t.Fatalf("upstream response log missing body: %q", detail.Response.UpstreamLog)
 	}
 }
 
