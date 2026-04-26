@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS request_log_content (
   compression      TEXT NOT NULL DEFAULT 'zstd',
   input_content    BLOB NOT NULL DEFAULT X'',
   output_content   BLOB NOT NULL DEFAULT X'',
+  detail_content   BLOB NOT NULL DEFAULT X'',
   FOREIGN KEY(log_id) REFERENCES request_logs(id) ON DELETE CASCADE
 );
 
@@ -183,6 +184,15 @@ func migrateFirstTokenColumn(db *sql.DB) {
 	if err != nil {
 		if !strings.Contains(err.Error(), "duplicate") {
 			log.Warnf("usage: migrate column first_token_ms: %v", err)
+		}
+	}
+}
+
+func migrateRequestLogDetailColumn(db *sql.DB) {
+	_, err := db.Exec("ALTER TABLE request_log_content ADD COLUMN detail_content BLOB NOT NULL DEFAULT X''")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate") {
+			log.Warnf("usage: migrate column detail_content: %v", err)
 		}
 	}
 }
@@ -254,6 +264,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	migrateApiKeyNameColumn(db)
 	log.Debugf("usage: running first_token_ms column migration")
 	migrateFirstTokenColumn(db)
+	log.Debugf("usage: running request log detail column migration")
+	migrateRequestLogDetailColumn(db)
 	log.Debugf("usage: initializing pricing table")
 	initPricingTable(db)
 	log.Debugf("usage: initializing model config tables")
@@ -286,7 +298,18 @@ func CloseDB() {
 func InsertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
 	inputContent, outputContent string) {
+	insertLog(apiKey, apiKeyName, model, source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, "")
+}
 
+func InsertLogWithDetails(apiKey, apiKeyName, model, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
+	insertLog(apiKey, apiKeyName, model, source, channelName, authIndex, failed, timestamp, latencyMs, firstTokenMs, tokens, inputContent, outputContent, detailContent)
+}
+
+func insertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
+	failed bool, timestamp time.Time, latencyMs, firstTokenMs int64, tokens TokenStats,
+	inputContent, outputContent, detailContent string) {
 	db := getDB()
 	if db == nil {
 		return
@@ -325,14 +348,14 @@ func InsertLog(apiKey, apiKeyName, model, source, channelName, authIndex string,
 		return
 	}
 
-	if requestLogStorage.StoreContent && (inputContent != "" || outputContent != "") {
+	if requestLogStorage.StoreContent && (inputContent != "" || outputContent != "" || detailContent != "") {
 		logID, errLastID := result.LastInsertId()
 		if errLastID != nil {
 			_ = tx.Rollback()
 			log.Errorf("usage: resolve inserted log id: %v", errLastID)
 			return
 		}
-		if errStore := insertLogContentTx(tx, logID, timestamp, inputContent, outputContent); errStore != nil {
+		if errStore := insertLogContentTx(tx, logID, timestamp, inputContent, outputContent, detailContent); errStore != nil {
 			_ = tx.Rollback()
 			log.Errorf("usage: insert log content: %v", errStore)
 			return
@@ -1051,6 +1074,8 @@ func normalizeLogContentPart(part string) (string, error) {
 		return "input", nil
 	case "output":
 		return "output", nil
+	case "details":
+		return "details", nil
 	default:
 		return "", fmt.Errorf("usage: invalid content part %q", part)
 	}
@@ -1101,6 +1126,8 @@ func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
 	column := "input_content"
 	if part == "output" {
 		column = "output_content"
+	} else if part == "details" {
+		column = "detail_content"
 	}
 
 	result, err := queryCompressedLogContentPart(
@@ -1117,6 +1144,15 @@ func QueryLogContentPart(id int64, part string) (LogContentPartResult, error) {
 	)
 	if err == nil {
 		return result, nil
+	}
+	if part == "details" {
+		var fallback LogContentPartResult
+		fallback.Part = part
+		err = db.QueryRow("SELECT id, model FROM request_logs WHERE id = ?", id).Scan(&fallback.ID, &fallback.Model)
+		if err != nil {
+			return LogContentPartResult{}, fmt.Errorf("usage: query log content part: %w", err)
+		}
+		return fallback, nil
 	}
 
 	var fallback LogContentPartResult
@@ -1177,6 +1213,8 @@ func QueryLogContentPartForKey(id int64, apiKey string, part string) (LogContent
 	column := "input_content"
 	if part == "output" {
 		column = "output_content"
+	} else if part == "details" {
+		column = "detail_content"
 	}
 
 	result, err := queryCompressedLogContentPart(
@@ -1193,6 +1231,15 @@ func QueryLogContentPartForKey(id int64, apiKey string, part string) (LogContent
 	)
 	if err == nil {
 		return result, nil
+	}
+	if part == "details" {
+		var fallback LogContentPartResult
+		fallback.Part = part
+		err = db.QueryRow("SELECT id, model FROM request_logs WHERE id = ? AND api_key = ?", id, apiKey).Scan(&fallback.ID, &fallback.Model)
+		if err != nil {
+			return LogContentPartResult{}, fmt.Errorf("usage: query log content part: %w", err)
+		}
+		return fallback, nil
 	}
 
 	var fallback LogContentPartResult
@@ -1700,7 +1747,7 @@ func GetRequestLogStorageBytes() (int64, error) {
 	err := db.QueryRow(`
 		SELECT
 			COALESCE((
-				SELECT SUM(CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER))
+				SELECT SUM(CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER) + CAST(length(detail_content) AS INTEGER))
 				FROM request_log_content
 			), 0) +
 			COALESCE((

@@ -127,6 +127,39 @@ func TestQueryLogContentKeepsMissingFailedOutputEmpty(t *testing.T) {
 	}
 }
 
+func TestQueryLogContentPartReturnsStoredRequestDetails(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{
+		StoreContent:           true,
+		ContentRetentionDays:   30,
+		CleanupIntervalMinutes: 1440,
+	})
+
+	now := time.Now().UTC()
+	details := `{"client":{"ip":"203.0.113.8","headers":{"Authorization":"Bearer sk-client-plaintext"}},"upstream":{"headers":{"Authorization":"Bearer sk-upstream-plaintext"}},"response":{"headers":{"X-Request-Id":"req-plaintext"}}}`
+	InsertLogWithDetails("sk-test", "Primary", "gpt-test", "codex", "Codex", "auth-1", false, now, 100, 10, TokenStats{
+		InputTokens: 1, OutputTokens: 1, TotalTokens: 2,
+	}, `{"messages":[]}`, `{"choices":[]}`, details)
+
+	result, err := QueryLogs(LogQueryParams{Page: 1, Size: 10, Days: 1})
+	if err != nil {
+		t.Fatalf("QueryLogs() error = %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("expected 1 log row, got %d", len(result.Items))
+	}
+
+	part, err := QueryLogContentPart(result.Items[0].ID, "details")
+	if err != nil {
+		t.Fatalf("QueryLogContentPart(details) error = %v", err)
+	}
+	if part.Part != "details" {
+		t.Fatalf("part.Part = %q, want details", part.Part)
+	}
+	if part.Content != details {
+		t.Fatalf("details content = %q, want %q", part.Content, details)
+	}
+}
+
 func TestInitDBMigratesFirstTokenColumn(t *testing.T) {
 	CloseDB()
 	dbPath := filepath.Join(t.TempDir(), "usage.db")
@@ -350,7 +383,7 @@ func TestCleanupExpiredLogContentKeepsMetadataRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin() error = %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, timestamp, "expired-input", "expired-output"); err != nil {
+	if err := insertLogContentTx(tx, logID, timestamp, "expired-input", "expired-output", ""); err != nil {
 		t.Fatalf("insertLogContentTx() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -769,7 +802,7 @@ func TestInsertLogContentTxSkipsSingleRowLargerThanSizeCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Begin() error = %v", err)
 	}
-	if err := insertLogContentTx(tx, logID, time.Now().UTC(), payload, ""); err != nil {
+	if err := insertLogContentTx(tx, logID, time.Now().UTC(), payload, "", ""); err != nil {
 		t.Fatalf("insertLogContentTx() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {

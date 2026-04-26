@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -217,6 +218,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 			Detail:        detail,
 			InputContent:  inputContent,
 			OutputContent: outputContent,
+			DetailContent: buildRequestDetailContent(ctx),
 		})
 	})
 }
@@ -251,6 +253,7 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 			Detail:        usage.Detail{},
 			InputContent:  inputContent,
 			OutputContent: outputContent,
+			DetailContent: buildRequestDetailContent(ctx),
 		})
 	})
 }
@@ -332,6 +335,91 @@ func apiKeyFromContext(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+func buildRequestDetailContent(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return ""
+	}
+
+	req := ginCtx.Request
+	apiRequest, _ := ginCtx.Get(apiRequestKey)
+	apiResponse, _ := ginCtx.Get(apiResponseKey)
+
+	detail := map[string]any{
+		"client": map[string]any{
+			"ip":                  ginCtx.ClientIP(),
+			"remote_addr":         req.RemoteAddr,
+			"method":              req.Method,
+			"url":                 req.URL.String(),
+			"path":                req.URL.Path,
+			"query":               req.URL.Query(),
+			"host":                req.Host,
+			"content_length":      req.ContentLength,
+			"headers":             cloneHeaderValues(req.Header),
+			"fingerprint_headers": extractFingerprintHeaders(req.Header),
+		},
+		"upstream": map[string]any{
+			"request_log": bytesToString(apiRequest),
+		},
+		"response": map[string]any{
+			"upstream_log": bytesToString(apiResponse),
+		},
+	}
+
+	data, err := json.Marshal(detail)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func bytesToString(value any) string {
+	data, ok := value.([]byte)
+	if !ok || len(data) == 0 {
+		return ""
+	}
+	return string(data)
+}
+
+func cloneHeaderValues(headers http.Header) map[string][]string {
+	if len(headers) == 0 {
+		return map[string][]string{}
+	}
+	out := make(map[string][]string, len(headers))
+	for key, values := range headers {
+		copied := make([]string, len(values))
+		copy(copied, values)
+		out[key] = copied
+	}
+	return out
+}
+
+func extractFingerprintHeaders(headers http.Header) map[string][]string {
+	out := make(map[string][]string)
+	for key, values := range headers {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized == "" {
+			continue
+		}
+		if normalized == "user-agent" ||
+			strings.Contains(normalized, "session") ||
+			strings.Contains(normalized, "version") ||
+			strings.Contains(normalized, "originator") ||
+			strings.Contains(normalized, "codex") ||
+			strings.Contains(normalized, "claude") ||
+			strings.Contains(normalized, "gemini") ||
+			strings.HasPrefix(normalized, "x-") {
+			copied := make([]string, len(values))
+			copy(copied, values)
+			out[key] = copied
+		}
+	}
+	return out
 }
 
 func contextStringValue(ctx context.Context, key any) string {
