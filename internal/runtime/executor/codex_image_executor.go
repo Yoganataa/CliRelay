@@ -124,14 +124,31 @@ func (e *CodexExecutor) executeImageGeneration(ctx context.Context, auth *clipro
 	if strings.TrimSpace(apiKey) == "" {
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusUnauthorized, msg: "codex image generation requires a Codex OAuth access token"}
 	}
-	if opts.Alt == codexImageEditsAlt || parsed.hasEditInputs() {
-		payload, headers, execErr := e.executeCodexImageViaResponses(ctx, auth, req.Payload, parsed)
-		if execErr != nil {
-			return cliproxyexecutor.Response{}, execErr
+	if opts.Alt == codexImageGenerationAlt || opts.Alt == codexImageEditsAlt || parsed.hasEditInputs() {
+		payloads := make([][]byte, 0, parsed.N)
+		var responseHeaders http.Header
+		for i := 0; i < parsed.N; i++ {
+			parsedOnce := *parsed
+			parsedOnce.N = 1
+			if parsed.N > 1 {
+				parsedOnce.Prompt = buildCodexImagePrompt(parsed, i)
+			}
+			payload, headers, execErr := e.executeCodexImageViaResponses(ctx, auth, req.Payload, &parsedOnce)
+			if execErr != nil {
+				return cliproxyexecutor.Response{}, execErr
+			}
+			payloads = append(payloads, payload)
+			if responseHeaders == nil {
+				responseHeaders = headers
+			}
+		}
+		payload, err := mergeCodexImageOpenAIResponses(payloads)
+		if err != nil {
+			return cliproxyexecutor.Response{}, err
 		}
 		reporter.publishWithContent(ctx, parseOpenAIUsage(payload), inputForLog, string(payload))
 		reporter.ensurePublished(ctx)
-		return cliproxyexecutor.Response{Payload: payload, Headers: headers}, nil
+		return cliproxyexecutor.Response{Payload: payload, Headers: responseHeaders}, nil
 	}
 
 	ctxRequest := ctx
