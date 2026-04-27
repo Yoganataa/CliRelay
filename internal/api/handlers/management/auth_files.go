@@ -868,6 +868,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		Label    *string `json:"label"`
 		Prefix   *string `json:"prefix"`
 		ProxyURL *string `json:"proxy_url"`
+		ProxyID  *string `json:"proxy_id"`
 		Priority *int    `json:"priority"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -935,6 +936,18 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 	if req.ProxyURL != nil {
 		targetAuth.ProxyURL = *req.ProxyURL
+		changed = true
+	}
+	if req.ProxyID != nil {
+		targetAuth.ProxyID = strings.TrimSpace(*req.ProxyID)
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if targetAuth.ProxyID == "" {
+			delete(targetAuth.Metadata, "proxy_id")
+		} else {
+			targetAuth.Metadata["proxy_id"] = targetAuth.ProxyID
+		}
 		changed = true
 	}
 	if req.Priority != nil {
