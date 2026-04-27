@@ -274,6 +274,8 @@ func InitDB(dbPath string, storageCfg config.RequestLogStorageConfig, loc *time.
 	initAPIKeysTable(db)
 	log.Debugf("usage: initializing routing_config table")
 	initRoutingConfigTable(db)
+	log.Debugf("usage: initializing proxy_pool table")
+	initProxyPoolTable(db)
 	startRequestLogMaintenance(db)
 	log.Infof("usage: SQLite database initialised at %s", dbPath)
 	return nil
@@ -848,7 +850,7 @@ func dashboardTrendsFromBuckets(buckets []dashboardBucket) DashboardTrends {
 		SuccessRate:      make([]DashboardTrendPoint, 0, len(buckets)),
 		TotalTokens:      make([]DashboardTrendPoint, 0, len(buckets)),
 		FailedRequests:   make([]DashboardTrendPoint, 0, len(buckets)),
-		ThroughputSeries: make([]DashboardThroughputPoint, 0, 0),
+		ThroughputSeries: make([]DashboardThroughputPoint, 0),
 	}
 
 	for _, bucket := range buckets {
