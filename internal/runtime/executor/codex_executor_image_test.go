@@ -554,6 +554,135 @@ func TestCodexExecutorExecuteImageGenerationViaResponsesToolChoice(t *testing.T)
 	}
 }
 
+func TestCodexExecutorExecuteImageGenerationRetriesResponsesFailedRateLimit(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempts.Add(1) == 1 {
+			_, _ = w.Write([]byte(
+				"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002}}\n\n" +
+					"data: {\"type\":\"error\",\"error\":{\"type\":\"input-images\",\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for gpt-image-2. Please try again in 1ms.\"}}\n\n" +
+					"data: {\"type\":\"response.failed\",\"response\":{\"created_at\":1710000002,\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for gpt-image-2. Please try again in 1ms.\"}}}\n\n" +
+					"data: [DONE]\n\n",
+			))
+			return
+		}
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000003}}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000003,\"output\":[{\"type\":\"image_generation_call\",\"result\":\"Z2VuZXJhdGVk\",\"revised_prompt\":\"retried image\"}]}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-generation-retry",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: []byte(`{"model":"gpt-image-2","prompt":"给我绘制一个 springboot 的系统架构图"}`),
+		Format:  sdktranslator.FromString("openai"),
+	}, cliproxyexecutor.Options{
+		Alt:          "images/generations",
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	}
+
+	var payload struct {
+		Data []struct {
+			B64JSON       string `json:"b64_json"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if len(payload.Data) != 1 {
+		t.Fatalf("data length = %d, want 1", len(payload.Data))
+	}
+	if payload.Data[0].B64JSON != "Z2VuZXJhdGVk" {
+		t.Fatalf("b64_json = %q, want generated image", payload.Data[0].B64JSON)
+	}
+	if payload.Data[0].RevisedPrompt != "retried image" {
+		t.Fatalf("revised_prompt = %q, want retried image", payload.Data[0].RevisedPrompt)
+	}
+}
+
+func TestCodexExecutorExecuteImageGenerationReturnsResponsesFailedRateLimit(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000002}}\n\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"created_at\":1710000002,\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":\"Rate limit reached for gpt-image-2. Please try again in 1ms.\"}}}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "codex-auth-generation-rate-limit",
+		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url": server.URL + "/backend-api/codex",
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"account_id":   "account-1",
+		},
+	}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: []byte(`{"model":"gpt-image-2","prompt":"draw a fox"}`),
+		Format:  sdktranslator.FromString("openai"),
+	}, cliproxyexecutor.Options{
+		Alt:          "images/generations",
+		SourceFormat: sdktranslator.FromString("openai"),
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want rate limit error")
+	}
+	status, ok := err.(statusErr)
+	if !ok {
+		t.Fatalf("Execute() error type = %T, want statusErr", err)
+	}
+	if status.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode() = %d, want 429", status.StatusCode())
+	}
+	if !strings.Contains(status.Error(), "rate_limit_exceeded") || strings.Contains(status.Error(), "stream disconnected") {
+		t.Fatalf("error = %q, want upstream rate limit without disconnected message", status.Error())
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts = %d, want 3 retries including initial attempt", attempts.Load())
+	}
+}
+
 func TestUsageReporterTrackFailureStoresErrorContent(t *testing.T) {
 	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
 	cliproxyusage.RegisterPlugin(usagePlugin)
