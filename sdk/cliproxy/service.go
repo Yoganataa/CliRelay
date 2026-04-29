@@ -652,6 +652,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.coreManager.StartAutoRefresh(context.WithoutCancel(ctx), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
+	internalusage.StartOpenRouterModelSyncScheduler(ctx)
 
 	select {
 	case <-ctx.Done():
