@@ -99,48 +99,31 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 			result.Skipped++
 			continue
 		}
+		legacyModelIDs := openRouterLegacyLocalModelIDs(remoteModelID, owner, modelID)
 		if existing, exists := GetModelConfig(modelID); exists {
-			if ownerMatchesOpenRouterAliasPrefix(existing.OwnedBy, owner) {
-				existing.OwnedBy = owner
-			}
-			existing.PricingMode = "token"
-			existing.InputPricePerMillion = openRouterPricePerMillion(model.Pricing.Prompt)
-			existing.OutputPricePerMillion = openRouterPricePerMillion(model.Pricing.Completion)
-			existing.CachedPricePerMillion = openRouterPricePerMillion(model.Pricing.InputCacheRead)
-			existing.PricePerCall = 0
+			openRouterApplyModelSync(&existing, model, owner)
 			if err := UpsertModelConfig(existing); err != nil {
 				return result, fmt.Errorf("sync openrouter model pricing %s: %w", modelID, err)
 			}
-			if remoteModelID != modelID {
-				if prefixed, ok := GetModelConfig(remoteModelID); ok && prefixed.Source == openRouterModelSource {
-					if err := DeleteModelConfig(remoteModelID); err != nil {
-						return result, fmt.Errorf("delete old openrouter model %s: %w", remoteModelID, err)
-					}
-				}
+			if err := openRouterDeleteLegacyOpenRouterRows(legacyModelIDs); err != nil {
+				return result, err
+			}
+			if err := openRouterSyncExistingAliasRows(model, owner, legacyModelIDs); err != nil {
+				return result, err
 			}
 			result.Updated++
 			continue
 		}
-		if remoteModelID != modelID {
-			if existing, exists := GetModelConfig(remoteModelID); exists && existing.Source == openRouterModelSource {
-				existing.ModelID = modelID
-				if ownerMatchesOpenRouterAliasPrefix(existing.OwnedBy, owner) || existing.OwnedBy == "" {
-					existing.OwnedBy = owner
-				}
-				existing.PricingMode = "token"
-				existing.InputPricePerMillion = openRouterPricePerMillion(model.Pricing.Prompt)
-				existing.OutputPricePerMillion = openRouterPricePerMillion(model.Pricing.Completion)
-				existing.CachedPricePerMillion = openRouterPricePerMillion(model.Pricing.InputCacheRead)
-				existing.PricePerCall = 0
-				if err := UpsertModelConfig(existing); err != nil {
-					return result, fmt.Errorf("migrate openrouter model %s to %s: %w", remoteModelID, modelID, err)
-				}
-				if err := DeleteModelConfig(remoteModelID); err != nil {
-					return result, fmt.Errorf("delete old openrouter model %s: %w", remoteModelID, err)
-				}
-				result.Updated++
-				continue
+		migrated, err := openRouterMigrateLegacyOpenRouterRow(modelID, owner, model, legacyModelIDs)
+		if err != nil {
+			return result, err
+		}
+		if migrated {
+			if err := openRouterSyncExistingAliasRows(model, owner, legacyModelIDs); err != nil {
+				return result, err
 			}
+			result.Updated++
+			continue
 		}
 
 		row := ModelConfigRow{
@@ -156,6 +139,9 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 		}
 		if err := UpsertModelConfig(row); err != nil {
 			return result, fmt.Errorf("sync openrouter model %s: %w", modelID, err)
+		}
+		if err := openRouterSyncExistingAliasRows(model, owner, legacyModelIDs); err != nil {
+			return result, err
 		}
 		result.Added++
 	}
@@ -420,14 +406,136 @@ func openRouterOwnerFromModelID(modelID string) string {
 }
 
 func openRouterLocalModelID(remoteModelID, owner string) string {
-	modelID := strings.TrimSpace(remoteModelID)
-	if _, suffix, found := strings.Cut(modelID, "/"); found {
-		modelID = strings.TrimSpace(suffix)
-	}
+	modelID := openRouterProviderlessModelID(remoteModelID)
 	if normalizeModelOwnerValue(owner) == "anthropic" {
 		modelID = strings.ReplaceAll(modelID, ".", "-")
+		modelID = openRouterStripAnthropicReleaseDate(modelID)
 	}
 	return modelID
+}
+
+func openRouterProviderlessModelID(remoteModelID string) string {
+	modelID := strings.TrimSpace(remoteModelID)
+	if _, suffix, found := strings.Cut(modelID, "/"); found {
+		return strings.TrimSpace(suffix)
+	}
+	return modelID
+}
+
+func openRouterStripAnthropicReleaseDate(modelID string) string {
+	modelID = strings.TrimSpace(modelID)
+	if !strings.HasPrefix(modelID, "claude-") || len(modelID) <= 9 {
+		return modelID
+	}
+	dateStart := len(modelID) - 8
+	if modelID[dateStart-1] != '-' {
+		return modelID
+	}
+	for _, ch := range modelID[dateStart:] {
+		if ch < '0' || ch > '9' {
+			return modelID
+		}
+	}
+	return modelID[:dateStart-1]
+}
+
+func openRouterLegacyLocalModelIDs(remoteModelID, owner, modelID string) []string {
+	var ids []string
+	seen := map[string]struct{}{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || id == modelID {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	add(remoteModelID)
+	providerless := openRouterProviderlessModelID(remoteModelID)
+	add(providerless)
+	if normalizeModelOwnerValue(owner) == "anthropic" {
+		add(strings.ReplaceAll(providerless, ".", "-"))
+	}
+	return ids
+}
+
+func openRouterApplyModelSync(row *ModelConfigRow, model OpenRouterRemoteModel, owner string) {
+	if row == nil {
+		return
+	}
+	if row.OwnedBy == "" || ownerMatchesOpenRouterAliasPrefix(row.OwnedBy, owner) {
+		row.OwnedBy = owner
+	}
+	if description := openRouterModelDescription(model); description != "" && openRouterShouldSyncDescription(*row) {
+		row.Description = description
+	}
+	row.PricingMode = "token"
+	row.InputPricePerMillion = openRouterPricePerMillion(model.Pricing.Prompt)
+	row.OutputPricePerMillion = openRouterPricePerMillion(model.Pricing.Completion)
+	row.CachedPricePerMillion = openRouterPricePerMillion(model.Pricing.InputCacheRead)
+	row.PricePerCall = 0
+}
+
+func openRouterShouldSyncDescription(row ModelConfigRow) bool {
+	if strings.TrimSpace(row.Description) == "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(row.Source)) {
+	case openRouterModelSource, "seed":
+		return true
+	default:
+		return false
+	}
+}
+
+func openRouterMigrateLegacyOpenRouterRow(modelID, owner string, model OpenRouterRemoteModel, legacyModelIDs []string) (bool, error) {
+	for _, legacyModelID := range legacyModelIDs {
+		existing, exists := GetModelConfig(legacyModelID)
+		if !exists || existing.Source != openRouterModelSource {
+			continue
+		}
+		existing.ModelID = modelID
+		openRouterApplyModelSync(&existing, model, owner)
+		if err := UpsertModelConfig(existing); err != nil {
+			return false, fmt.Errorf("migrate openrouter model %s to %s: %w", legacyModelID, modelID, err)
+		}
+		if err := openRouterDeleteLegacyOpenRouterRows(legacyModelIDs); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func openRouterDeleteLegacyOpenRouterRows(modelIDs []string) error {
+	for _, modelID := range modelIDs {
+		existing, exists := GetModelConfig(modelID)
+		if !exists || existing.Source != openRouterModelSource {
+			continue
+		}
+		if err := DeleteModelConfig(modelID); err != nil {
+			return fmt.Errorf("delete old openrouter model %s: %w", modelID, err)
+		}
+	}
+	return nil
+}
+
+func openRouterSyncExistingAliasRows(model OpenRouterRemoteModel, owner string, modelIDs []string) error {
+	for _, modelID := range modelIDs {
+		existing, exists := GetModelConfig(modelID)
+		if !exists || existing.Source == openRouterModelSource {
+			continue
+		}
+		openRouterApplyModelSync(&existing, model, owner)
+		if err := UpsertModelConfig(existing); err != nil {
+			return fmt.Errorf("sync openrouter model alias %s: %w", modelID, err)
+		}
+	}
+	return nil
 }
 
 func ownerMatchesOpenRouterAliasPrefix(owner, cleanOwner string) bool {

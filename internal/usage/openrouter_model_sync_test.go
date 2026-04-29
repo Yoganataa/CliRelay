@@ -91,6 +91,90 @@ func TestSyncOpenRouterModelsUpdatesExistingUserModelPricingOnly(t *testing.T) {
 	}
 }
 
+func TestSyncOpenRouterModelsUpdatesExistingOpenRouterDescription(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	if err := UpsertModelConfig(ModelConfigRow{
+		ModelID:               "gpt-openrouter-test",
+		OwnedBy:               "openai",
+		Description:           "Old OpenRouter description",
+		Enabled:               true,
+		PricingMode:           "token",
+		InputPricePerMillion:  9,
+		OutputPricePerMillion: 18,
+		Source:                "openrouter",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	result, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "openai/gpt-openrouter-test",
+			Description: "Fresh remote description",
+			Pricing: OpenRouterRemotePricing{
+				Prompt:     "0.00000175",
+				Completion: "0.000014",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+	if result.Seen != 1 || result.Added != 0 || result.Updated != 1 || result.Skipped != 0 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+
+	model, ok := GetModelConfig("gpt-openrouter-test")
+	if !ok {
+		t.Fatal("expected existing OpenRouter model config")
+	}
+	if model.Description != "Fresh remote description" {
+		t.Fatalf("existing OpenRouter description should be refreshed, got %q", model.Description)
+	}
+}
+
+func TestSyncOpenRouterModelsFillsEmptyUserDescription(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	if err := UpsertModelConfig(ModelConfigRow{
+		ModelID:               "gpt-openrouter-test",
+		OwnedBy:               "custom-owner",
+		Description:           "",
+		Enabled:               true,
+		PricingMode:           "token",
+		InputPricePerMillion:  9,
+		OutputPricePerMillion: 18,
+		Source:                "user",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	result, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "openai/gpt-openrouter-test",
+			Description: "Remote description",
+			Pricing: OpenRouterRemotePricing{
+				Prompt:     "0.00000175",
+				Completion: "0.000014",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+	if result.Seen != 1 || result.Added != 0 || result.Updated != 1 || result.Skipped != 0 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+
+	model, ok := GetModelConfig("gpt-openrouter-test")
+	if !ok {
+		t.Fatal("expected existing model config")
+	}
+	if model.Description != "Remote description" || model.Source != "user" {
+		t.Fatalf("empty user description should be filled without changing source: %+v", model)
+	}
+}
+
 func TestSyncOpenRouterModelsStripsProviderPrefixAndTildeFromImportedModelID(t *testing.T) {
 	initModelConfigTestDB(t)
 
@@ -158,6 +242,50 @@ func TestSyncOpenRouterModelsNormalizesAnthropicVersionDots(t *testing.T) {
 	}
 }
 
+func TestSyncOpenRouterModelsUsesAnthropicDateSuffixBaseModelID(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	result, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "anthropic/claude-3-5-haiku-20241022",
+			Description: "Fast Claude Haiku model from OpenRouter",
+			Pricing: OpenRouterRemotePricing{
+				Prompt:         "0.0000008",
+				Completion:     "0.000004",
+				InputCacheRead: "0.00000008",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+	if result.Seen != 1 || result.Added != 1 || result.Updated != 0 || result.Skipped != 0 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+
+	baseModel, ok := GetModelConfig("claude-3-5-haiku")
+	if !ok {
+		t.Fatal("expected Anthropic dated OpenRouter id to sync into the base Claude id")
+	}
+	if baseModel.OwnedBy != "anthropic" || baseModel.Description != "Fast Claude Haiku model from OpenRouter" {
+		t.Fatalf("unexpected base Claude metadata: %+v", baseModel)
+	}
+	if baseModel.InputPricePerMillion != 0.8 || baseModel.OutputPricePerMillion != 4 || baseModel.CachedPricePerMillion != 0.08 {
+		t.Fatalf("unexpected base Claude pricing: %+v", baseModel)
+	}
+
+	datedModel, ok := GetModelConfig("claude-3-5-haiku-20241022")
+	if !ok {
+		t.Fatal("expected seeded dated Claude id to remain available")
+	}
+	if datedModel.InputPricePerMillion != 0.8 || datedModel.OutputPricePerMillion != 4 || datedModel.CachedPricePerMillion != 0.08 {
+		t.Fatalf("dated Claude alias should reuse base pricing: %+v", datedModel)
+	}
+	if datedModel.Description != "Fast Claude Haiku model from OpenRouter" {
+		t.Fatalf("dated Claude alias should reuse base description, got %q", datedModel.Description)
+	}
+}
+
 func TestSyncOpenRouterModelsMigratesExistingOpenRouterPrefixedRows(t *testing.T) {
 	initModelConfigTestDB(t)
 
@@ -198,8 +326,8 @@ func TestSyncOpenRouterModelsMigratesExistingOpenRouterPrefixedRows(t *testing.T
 	if _, ok := GetModelConfig("openai/gpt-openrouter-legacy"); ok {
 		t.Fatal("did not expect old prefixed OpenRouter row to remain")
 	}
-	if model.Description != "Existing prefixed import" || model.Source != "openrouter" || model.OwnedBy != "openai" {
-		t.Fatalf("existing OpenRouter metadata should otherwise stay unchanged: %+v", model)
+	if model.Description != "Remote description" || model.Source != "openrouter" || model.OwnedBy != "openai" {
+		t.Fatalf("existing OpenRouter metadata should be refreshed during migration: %+v", model)
 	}
 	if model.InputPricePerMillion != 2 || model.OutputPricePerMillion != 8 {
 		t.Fatalf("existing OpenRouter pricing should be synced: %+v", model)
