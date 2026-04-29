@@ -58,6 +58,19 @@ CREATE TABLE IF NOT EXISTS model_owner_presets (
   enabled     INTEGER NOT NULL DEFAULT 1,
   updated_at  DATETIME NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS model_openrouter_sync_state (
+  id               INTEGER PRIMARY KEY CHECK(id = 1),
+  enabled          INTEGER NOT NULL DEFAULT 0,
+  interval_minutes INTEGER NOT NULL DEFAULT 1440,
+  last_sync_at     TEXT NOT NULL DEFAULT '',
+  last_success_at  TEXT NOT NULL DEFAULT '',
+  last_error       TEXT NOT NULL DEFAULT '',
+  last_seen        INTEGER NOT NULL DEFAULT 0,
+  last_added       INTEGER NOT NULL DEFAULT 0,
+  last_skipped     INTEGER NOT NULL DEFAULT 0,
+  updated_at       DATETIME NOT NULL
+);
 `
 
 var (
