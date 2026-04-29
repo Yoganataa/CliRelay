@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS model_openrouter_sync_state (
   last_error       TEXT NOT NULL DEFAULT '',
   last_seen        INTEGER NOT NULL DEFAULT 0,
   last_added       INTEGER NOT NULL DEFAULT 0,
+  last_updated     INTEGER NOT NULL DEFAULT 0,
   last_skipped     INTEGER NOT NULL DEFAULT 0,
   updated_at       DATETIME NOT NULL
 );
@@ -108,6 +109,7 @@ func initModelConfigTables(db *sql.DB) {
 		log.Errorf("usage: create model config tables: %v", err)
 		return
 	}
+	ensureOpenRouterModelSyncStateSchema(db)
 	seedDefaultModelConfigRows(db)
 	mergeLegacyPricingIntoModelConfigs(db)
 	reloadModelConfigCache(db)
