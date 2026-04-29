@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,6 +36,7 @@ type OpenRouterRemoteModel struct {
 type OpenRouterModelSyncResult struct {
 	Seen    int `json:"seen"`
 	Added   int `json:"added"`
+	Updated int `json:"updated"`
 	Skipped int `json:"skipped"`
 }
 
@@ -46,6 +48,7 @@ type OpenRouterModelSyncState struct {
 	LastError       string `json:"last_error"`
 	LastSeen        int    `json:"last_seen"`
 	LastAdded       int    `json:"last_added"`
+	LastUpdated     int    `json:"last_updated"`
 	LastSkipped     int    `json:"last_skipped"`
 	UpdatedAt       string `json:"updated_at"`
 	Running         bool   `json:"running"`
@@ -89,8 +92,20 @@ func SyncOpenRouterModelList(ctx context.Context, models []OpenRouterRemoteModel
 			result.Skipped++
 			continue
 		}
-		if _, exists := GetModelConfig(modelID); exists {
-			result.Skipped++
+		if existing, exists := GetModelConfig(modelID); exists {
+			cleanOwner := openRouterOwnerFromModelID(modelID)
+			if ownerMatchesOpenRouterAliasPrefix(existing.OwnedBy, cleanOwner) {
+				existing.OwnedBy = cleanOwner
+			}
+			existing.PricingMode = "token"
+			existing.InputPricePerMillion = openRouterPricePerMillion(model.Pricing.Prompt)
+			existing.OutputPricePerMillion = openRouterPricePerMillion(model.Pricing.Completion)
+			existing.CachedPricePerMillion = openRouterPricePerMillion(model.Pricing.InputCacheRead)
+			existing.PricePerCall = 0
+			if err := UpsertModelConfig(existing); err != nil {
+				return result, fmt.Errorf("sync openrouter model pricing %s: %w", modelID, err)
+			}
+			result.Updated++
 			continue
 		}
 
@@ -125,7 +140,7 @@ func GetOpenRouterModelSyncState() OpenRouterModelSyncState {
 	ensureOpenRouterModelSyncStateRow()
 	var enabled int
 	if err := db.QueryRow(
-		`SELECT enabled, interval_minutes, last_sync_at, last_success_at, last_error, last_seen, last_added, last_skipped, updated_at
+		`SELECT enabled, interval_minutes, last_sync_at, last_success_at, last_error, last_seen, last_added, last_updated, last_skipped, updated_at
 		 FROM model_openrouter_sync_state WHERE id = 1`,
 	).Scan(
 		&enabled,
@@ -135,6 +150,7 @@ func GetOpenRouterModelSyncState() OpenRouterModelSyncState {
 		&state.LastError,
 		&state.LastSeen,
 		&state.LastAdded,
+		&state.LastUpdated,
 		&state.LastSkipped,
 		&state.UpdatedAt,
 	); err != nil {
@@ -262,13 +278,47 @@ func ensureOpenRouterModelSyncStateRow() {
 	if db == nil {
 		return
 	}
+	ensureOpenRouterModelSyncStateSchema(db)
 	_, _ = db.Exec(
 		`INSERT OR IGNORE INTO model_openrouter_sync_state
-		 (id, enabled, interval_minutes, last_sync_at, last_success_at, last_error, last_seen, last_added, last_skipped, updated_at)
-		 VALUES (1, 0, ?, '', '', '', 0, 0, 0, ?)`,
+		 (id, enabled, interval_minutes, last_sync_at, last_success_at, last_error, last_seen, last_added, last_updated, last_skipped, updated_at)
+		 VALUES (1, 0, ?, '', '', '', 0, 0, 0, 0, ?)`,
 		defaultOpenRouterModelSyncIntervalMinutes,
 		nowRFC3339(),
 	)
+}
+
+func ensureOpenRouterModelSyncStateSchema(db *sql.DB) {
+	if db == nil || sqliteColumnExists(db, "model_openrouter_sync_state", "last_updated") {
+		return
+	}
+	if _, err := db.Exec("ALTER TABLE model_openrouter_sync_state ADD COLUMN last_updated INTEGER NOT NULL DEFAULT 0"); err != nil {
+		log.Warnf("usage: add openrouter sync last_updated column: %v", err)
+	}
+}
+
+func sqliteColumnExists(db *sql.DB, tableName, columnName string) bool {
+	rows, err := db.Query("PRAGMA table_info(" + tableName + ")")
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			continue
+		}
+		if name == columnName {
+			return true
+		}
+	}
+	return false
 }
 
 func recordOpenRouterModelSyncResult(result OpenRouterModelSyncResult, syncErr error) OpenRouterModelSyncState {
@@ -288,13 +338,14 @@ func recordOpenRouterModelSyncResult(result OpenRouterModelSyncResult, syncErr e
 	}
 	_, _ = db.Exec(
 		`UPDATE model_openrouter_sync_state
-		 SET last_sync_at = ?, last_success_at = ?, last_error = ?, last_seen = ?, last_added = ?, last_skipped = ?, updated_at = ?
+		 SET last_sync_at = ?, last_success_at = ?, last_error = ?, last_seen = ?, last_added = ?, last_updated = ?, last_skipped = ?, updated_at = ?
 		 WHERE id = 1`,
 		now,
 		lastSuccessAt,
 		lastError,
 		result.Seen,
 		result.Added,
+		result.Updated,
 		result.Skipped,
 		now,
 	)
@@ -327,7 +378,20 @@ func openRouterOwnerFromModelID(modelID string) string {
 	if !found {
 		return openRouterModelSource
 	}
+	prefix = strings.TrimLeft(prefix, "~～")
+	if strings.TrimSpace(prefix) == "" {
+		return openRouterModelSource
+	}
 	return normalizeModelOwnerValue(prefix)
+}
+
+func ownerMatchesOpenRouterAliasPrefix(owner, cleanOwner string) bool {
+	owner = normalizeModelOwnerValue(owner)
+	cleanOwner = normalizeModelOwnerValue(cleanOwner)
+	if owner == "" || cleanOwner == "" {
+		return false
+	}
+	return (strings.HasPrefix(owner, "~") || strings.HasPrefix(owner, "～")) && strings.TrimLeft(owner, "~～") == cleanOwner
 }
 
 func openRouterModelDescription(model OpenRouterRemoteModel) string {
