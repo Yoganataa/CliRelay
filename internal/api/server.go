@@ -754,6 +754,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/claude-api-key", s.mgmt.PatchClaudeKey)
 		mgmt.DELETE("/claude-api-key", s.mgmt.DeleteClaudeKey)
 
+		mgmt.GET("/bedrock-api-key", s.mgmt.GetBedrockKeys)
+		mgmt.PUT("/bedrock-api-key", s.mgmt.PutBedrockKeys)
+		mgmt.PATCH("/bedrock-api-key", s.mgmt.PatchBedrockKey)
+		mgmt.DELETE("/bedrock-api-key", s.mgmt.DeleteBedrockKey)
+
 		mgmt.GET("/codex-api-key", s.mgmt.GetCodexKeys)
 		mgmt.PUT("/codex-api-key", s.mgmt.PutCodexKeys)
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
