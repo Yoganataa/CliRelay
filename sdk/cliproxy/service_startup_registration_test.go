@@ -14,7 +14,7 @@ type startupStoreStub struct {
 }
 
 func (s *startupStoreStub) Save(context.Context, *coreauth.Auth) (string, error) { return "", nil }
-func (s *startupStoreStub) Delete(context.Context, string) error                  { return nil }
+func (s *startupStoreStub) Delete(context.Context, string) error                 { return nil }
 func (s *startupStoreStub) List(context.Context) ([]*coreauth.Auth, error) {
 	return s.auths, nil
 }
@@ -46,21 +46,21 @@ func TestServiceRun_RegistersModelsForLoadedAuths(t *testing.T) {
 	manager := coreauth.NewManager(store, &coreauth.RoundRobinSelector{}, nil)
 
 	service := &Service{
-		cfg: &config.Config{AuthDir: t.TempDir(), Port: 0},
+		cfg:            &config.Config{AuthDir: t.TempDir(), Port: 0},
 		configPath:     "/tmp/config.yaml",
 		tokenProvider:  startupTokenProviderStub{},
 		apiKeyProvider: startupAPIKeyProviderStub{},
 		watcherFactory: func(string, string, func(*config.Config)) (*WatcherWrapper, error) {
 			return &WatcherWrapper{
-				start: func(context.Context) error { return nil },
-				stop:  func() error { return nil },
-				setConfig: func(*config.Config) {},
-				setUpdateQueue: func(chan<- watcher.AuthUpdate) {},
+				start:                 func(context.Context) error { return nil },
+				stop:                  func() error { return nil },
+				setConfig:             func(*config.Config) {},
+				setUpdateQueue:        func(chan<- watcher.AuthUpdate) {},
 				dispatchRuntimeUpdate: func(watcher.AuthUpdate) bool { return false },
 			}, nil
 		},
-		coreManager:    manager,
-		accessManager:  nil,
+		coreManager:   manager,
+		accessManager: nil,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
