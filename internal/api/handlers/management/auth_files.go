@@ -1696,10 +1696,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 			return
 		}
 
-		ifToken["token_uri"] = "https://oauth2.googleapis.com/token"
-		ifToken["client_id"] = strings.TrimSpace(conf.ClientID)
-		ifToken["scopes"] = geminiAuth.Scopes
-		ifToken["universe_domain"] = "googleapis.com"
+		ifToken = geminiAuth.EnrichOAuthTokenMap(ifToken, conf)
 
 		ts := geminiAuth.GeminiTokenStorage{
 			Token:     ifToken,
