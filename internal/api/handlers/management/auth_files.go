@@ -1941,6 +1941,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 			Metadata: map[string]any{
 				"email":      tokenStorage.Email,
 				"account_id": tokenStorage.AccountID,
+				"plan_type":  strings.ToLower(planType),
 			},
 		}
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
