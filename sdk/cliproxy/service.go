@@ -502,6 +502,13 @@ func (s *Service) Run(ctx context.Context) error {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
 			log.Warnf("failed to load auth store: %v", errLoad)
 		}
+		for _, auth := range s.coreManager.List() {
+			if auth == nil || auth.ID == "" {
+				continue
+			}
+			s.ensureExecutorsForAuth(auth)
+			s.registerModelsForAuth(ctx, auth)
+		}
 	}
 
 	var err error
